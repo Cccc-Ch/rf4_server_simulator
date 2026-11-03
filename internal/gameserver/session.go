@@ -38,9 +38,10 @@ type Session struct {
 
 	// fishPushMu / fishPushGUID / fishPushAt 抑制同一尾鱼的重复 14/14 推送：
 	// 同一 GUID 短时间内推两次会让客户端重建鱼实体，模型与结算对不上。
-	fishPushMu   sync.Mutex
-	fishPushGUID string
-	fishPushAt   time.Time
+	fishPushMu        sync.Mutex
+	fishPushGUID      string
+	fishPushAt        time.Time
+	fishPushDelivered bool
 
 	stateMu      sync.Mutex
 	state        map[string]any // 会话级业务状态（选图、抛竿状态等）
@@ -128,6 +129,9 @@ func (s *Session) Push(main, sub uint8, body *proto.Value) uint32 {
 
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
+	if s.closed.Load() {
+		return 0
+	}
 	callID := uint32(s.Srv.nextCallID(s.Token))
 	env := proto.BuildRequestEnvelope(callID, main, sub, append(bodyBytes, 0x01))
 	if traceCmds {

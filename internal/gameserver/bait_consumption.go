@@ -531,7 +531,7 @@ func (s *Session) pushBaitChange(change baitChange) {
 	}
 }
 
-func (s *Server) pushBaitedFish(sess *Session, f *RolledFish, rod string) {
+func (s *Server) pushBaitedFish(sess *Session, f *RolledFish, rod string) bool {
 	hook := f.HookGUID
 	if hook == "" {
 		hook = s.mountedHookGuid(s.dbCtx(), rod)
@@ -542,12 +542,14 @@ func (s *Server) pushBaitedFish(sess *Session, f *RolledFish, rod string) {
 		change, err = s.consumeBaitEvent(sess.pushCtx(), sess.Userid, rod, f.FishGUID, strings.Fields(f.BaitGUIDs), false)
 		if err != nil {
 			s.log.Warn("鱼饵扣减失败，稍后重试", "uid", sess.Userid, "err", err)
-			time.AfterFunc(6*time.Second, func() { s.repushPending14_14(sess.Userid) })
-			return
+			return false
 		}
 	}
-	sess.Push14_14(f, hook, rod)
-	sess.pushBaitChange(change)
+	sent := sess.Push14_14(f, hook, rod)
+	if sent {
+		sess.pushBaitChange(change)
+	}
+	return sent
 }
 
 func (s *Server) consumeCastBait(sess *Session, st *FishState) error {

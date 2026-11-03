@@ -408,6 +408,7 @@ func hMarketSell(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 		ctx.Sess.Push2_1()
 		ctx.Sess.Push4_21(removed)
+		srv.retryCompletedCatchRecovery(ctx.Sess)
 		ctx.Log.Info("20/2 卖出", "条数", len(sold), "银分", total)
 	}
 	out := proto.Args(proto.S("112"))

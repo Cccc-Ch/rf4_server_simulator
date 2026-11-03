@@ -30,3 +30,63 @@ func TestClaimFishPushDedupe(t *testing.T) {
 		t.Fatal("空 GUID 不应抑制")
 	}
 }
+
+func TestFishPushFailedClaimAllowsImmediateRetry(t *testing.T) {
+	srv, _ := newRigTestServer(t)
+	sess := newProbeSess(srv)
+	fish := &RolledFish{FishGUID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Species: "perch", WeightG: 100}
+	if sess.Push14_14(fish, "", "") {
+		t.Fatal("missing tunnel reported delivery")
+	}
+	ticket, claimed, delivered := sess.reserveFishPush(fish.FishGUID)
+	if !claimed || delivered {
+		t.Fatal("failed send retained dedupe claim")
+	}
+	sess.finishFishPush(fish.FishGUID, ticket, false)
+	connection, peer := cleanupTestTunnel(t, "dedupe-retry")
+	sess.tunnel = connection
+	received := make(chan struct{})
+	go func() { _, _, _, _ = peer.ReadRecord(); close(received) }()
+	if !sess.Push14_14(fish, "", "") {
+		t.Fatal("immediate retry failed")
+	}
+	<-received
+	if !sess.Push14_14(fish, "", "") {
+		t.Fatal("delivered duplicate reported failure")
+	}
+	srv.callMu.Lock()
+	defer srv.callMu.Unlock()
+	if srv.callSeq[sess.Token] != 1 {
+		t.Fatalf("duplicate sent another fish: %d", srv.callSeq[sess.Token])
+	}
+}
+
+func TestFishPushClaimRollbackDoesNotClearNewerTicket(t *testing.T) {
+	for _, nextGUID := range []string{"fish-a", "fish-b"} {
+		t.Run(nextGUID, func(t *testing.T) {
+			sess := &Session{}
+			old, _, _ := sess.reserveFishPush("fish-a")
+			ready, done := make(chan struct{}), make(chan struct{})
+			go func() { <-ready; sess.finishFishPush("fish-a", old, false); close(done) }()
+			sess.fishPushMu.Lock()
+			old = time.Now().Add(-fishPushDedupeWindow - time.Second)
+			sess.fishPushAt = old
+			sess.fishPushMu.Unlock()
+			current, claimed, delivered := sess.reserveFishPush(nextGUID)
+			if !claimed || delivered {
+				t.Fatal("new claim rejected")
+			}
+			close(ready)
+			<-done
+			ticket, claimed, delivered := sess.reserveFishPush(nextGUID)
+			if claimed || delivered || !ticket.Equal(current) {
+				t.Fatal("old failed send cleared or confirmed newer claim")
+			}
+			sess.finishFishPush(nextGUID, current, true)
+			_, claimed, delivered = sess.reserveFishPush(nextGUID)
+			if claimed || !delivered {
+				t.Fatal("successful claim lost confirmation")
+			}
+		})
+	}
+}

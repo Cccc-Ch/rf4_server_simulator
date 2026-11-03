@@ -90,7 +90,5 @@ func (s *Server) emptyWeatherBiteLocked(sess *Session, st *FishState, now time.T
 	}
 	st.Resolved = false
 	delay := s.biteDelayInWeather(st, sess.weatherAt(st.Loc, now), now, st.Bonus)
-	st.BiteAt = now.Add(time.Duration(delay * float64(time.Second)))
-	gen := st.BiteGen
-	st.biteTimer = time.AfterFunc(time.Until(st.BiteAt), func() { s.onBiteTimer(sess.Userid, gen) })
+	s.armBiteTimerLocked(sess.Userid, st, now.Add(time.Duration(delay*float64(time.Second))))
 }

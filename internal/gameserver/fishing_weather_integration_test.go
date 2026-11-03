@@ -86,16 +86,29 @@ func TestWeatherRetryPreservesCastAndStopsWhenDisabledOrHooked(t *testing.T) {
 		st.mu.Lock()
 		st.CastActive, st.InWater, st.Resolved, st.PushSent, st.Hooked = true, true, false, false, scenario.hooked
 		st.CastTs, st.RigType = time.Now().Add(-time.Minute), scenario.rig
-		castTs, gen := st.CastTs, st.BiteGen
+		castTs, generation := st.CastTs, st.castGeneration
+		ticket := fishingTimerTicket{generation, st.biteTicket}
 		timer := time.NewTimer(time.Hour)
 		st.biteTimer = timer
 		st.mu.Unlock()
-		s.onBiteTimer(sess.Userid, gen)
+		s.onBiteTimerTicket(sess.Userid, ticket)
 		timer.Stop()
 		st.mu.Lock()
 		retry := st.biteTimer != nil
-		if retry != scenario.retry || st.Pending != nil || st.PushSent || st.BiteGen != gen || !st.CastTs.Equal(castTs) {
+		if retry != scenario.retry || st.Pending != nil || st.PushSent || st.castGeneration != generation || !st.CastTs.Equal(castTs) {
 			t.Errorf("retry state for %+v: retry=%v pending=%v pushed=%v", scenario, retry, st.Pending, st.PushSent)
+		}
+		if retry {
+			if st.biteTicket <= ticket.sequence || time.Until(st.BiteAt) < 59*time.Second {
+				t.Error("weather retry lost its delay or reused an old ticket")
+			}
+			current, due := st.biteTimer, st.BiteAt
+			st.mu.Unlock()
+			s.onBiteTimerTicket(sess.Userid, ticket)
+			st.mu.Lock()
+			if st.biteTimer != current || !st.BiteAt.Equal(due) {
+				t.Error("old callback replaced weather retry")
+			}
 		}
 		if st.biteTimer != nil {
 			st.biteTimer.Stop()
