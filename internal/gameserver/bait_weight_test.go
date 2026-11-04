@@ -61,6 +61,7 @@ func TestBaitWeightDistributionDBAndFallback(t *testing.T) {
 			}
 			t.Run(name+"/rules="+strict, func(t *testing.T) {
 				s, db := seedBaitWeightTest(t)
+				enableLegacyGearCap(t, s)
 				if err := db.TunableSet(t.Context(), "bait_pref_weight_shift", "2", "test"); err != nil {
 					t.Fatal(err)
 				}
@@ -96,6 +97,7 @@ func TestBaitWeightDistributionDBAndFallback(t *testing.T) {
 
 func TestBaitWeightCombinationUsesEvidenceAndExistingParameters(t *testing.T) {
 	s, db := seedBaitWeightTest(t)
+	enableLegacyGearCap(t, s)
 	for _, baits := range [][]string{{"rule_worm"}, {"rule_other", "rule_worm"}, {"rule_worm", "rule_other"}, {"rule_worm", "rule_worm"}} {
 		if got := s.baitWeightMode("c.roach", baits); math.Abs(got-1.36) > 1e-12 {
 			t.Fatalf("combination changed existing efficacy: baits=%v mode=%g", baits, got)
@@ -125,6 +127,7 @@ func TestBaitWeightReadsLivePrimaryAndSecondaryBaits(t *testing.T) {
 	for _, strict := range []string{"0", "1"} {
 		t.Run("rules="+strict, func(t *testing.T) {
 			s, db := seedBaitWeightTest(t)
+			enableLegacyGearCap(t, s)
 			if err := db.TunableSet(t.Context(), "bait_pref_weight_shift", "2", "test"); err != nil {
 				t.Fatal(err)
 			}
@@ -183,6 +186,7 @@ func TestWeightSamplingRespectsCapSwitchAndScale(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s, db := seedBaitWeightTest(t)
+			enableLegacyGearCap(t, s)
 			setBaitRuleSwitch(t, s, "0")
 			if err := db.TunableSet(t.Context(), "fish_weight_scale", "2.5", "test"); err != nil {
 				t.Fatal(err)
@@ -232,6 +236,7 @@ func TestWeightSamplingRespectsCapSwitchAndScale(t *testing.T) {
 
 func TestWeightSamplingRetriesOnlyKnownRoster(t *testing.T) {
 	s, db := seedBaitWeightTest(t)
+	enableLegacyGearCap(t, s)
 	setBaitRuleSwitch(t, s, "0")
 	for _, query := range []string{
 		`DELETE FROM loc_wiki_fish WHERE loc='rules-test' AND fish_key='frog'`,
@@ -281,6 +286,7 @@ func TestTriangularCapConditionsOriginalMode(t *testing.T) {
 
 func TestWeightSamplingRejectsUnrepresentableScaledWeights(t *testing.T) {
 	s, db := seedBaitWeightTest(t)
+	enableLegacyGearCap(t, s)
 	setBaitRuleSwitch(t, s, "0")
 	if err := db.TunableSet(t.Context(), "fish_weight_cap", "0", "test"); err != nil {
 		t.Fatal(err)

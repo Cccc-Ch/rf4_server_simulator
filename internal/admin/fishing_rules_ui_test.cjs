@@ -93,6 +93,16 @@ test('fishing rule switches save independently, reload and fit supported sizes a
     const state=values[rule.key]==='1'?'0':'1';await page.locator('#'+rule.prefix+'Toggle').click();await page.waitForFunction(({prefix,state})=>document.getElementById(prefix+'Toggle').getAttribute('aria-pressed')===String(state==='1'),{prefix:rule.prefix,state});assert.deepEqual(values,{...before,[rule.key]:state});
    }
    failRead=true;await page.reload({waitUntil:'networkidle'});for(const rule of rules){assert.equal(await page.locator('#'+rule.prefix+'Toggle').isDisabled(),true);assert.equal(await page.locator('#'+rule.prefix+'Badge').textContent(),'读取失败');}failRead=false;
+   await page.goto(`http://127.0.0.1:${server.address().port}/admin/#dashboard`,{waitUntil:'networkidle'});
+   const weightInput=page.locator('#tun_fish_weight_cap');await weightInput.waitFor();
+   assert.equal(await weightInput.getAttribute('placeholder'),'默认 0');
+   const weightLabel=page.locator('label[for="tun_fish_weight_cap"]');
+   assert.match(await weightLabel.textContent(),/允许大鱼咬轻装备/);
+   for(const text of [null,'允许大鱼咬轻装备，超载时按实际操作和组件承力搏鱼'.repeat(3),'FishingWeightLimit'.repeat(20)]){
+    if(text)await weightLabel.evaluate((e,t)=>e.textContent=t,text);
+    const m=await weightLabel.evaluate(e=>{const r=e.getBoundingClientRect(),p=e.parentElement.getBoundingClientRect();return {x:r.x,right:r.right,bottom:r.bottom,parentRight:p.right,scroll:e.scrollWidth,client:e.clientWidth};});
+    assert.ok(m.right<=m.parentRight+1&&m.scroll<=m.client+2,JSON.stringify({width,dpi,m}));
+   }
    assert.deepEqual(errors,[]);await context.close();
   }
   console.log(JSON.stringify({renderedCases:metrics.length,measurements:metrics,scrollAndActionChecks:buttonMetrics.length,buttons:rules.map(rule=>{const rows=buttonMetrics.filter(x=>x.prefix===rule.prefix);return{prefix:rule.prefix,minWidth:Math.min(...rows.map(x=>x.width)),maxWidth:Math.max(...rows.map(x=>x.width)),minHeight:Math.min(...rows.map(x=>x.height)),maxHeight:Math.max(...rows.map(x=>x.height)),fonts:[...new Set(rows.map(x=>x.font))]};})}));

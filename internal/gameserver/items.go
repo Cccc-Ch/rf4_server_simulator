@@ -261,9 +261,7 @@ func (s *Server) materializeInto(ctx context.Context, class string, def *store.I
 	}
 }
 
-// normalizeLeaderInnerWire 修复旧版本把主线对象类直接塞进前导 f1 的记录。
-// cat11 与 cat15 的线材字段名基本一致，按字段名搬到 cat15 对象即可保留
-// 真实外观 numeric_id、强度、线径、长度、耐久和实例 GUID。
+// normalizeLeaderInnerWire 将旧主线对象按字段名转为前导线材对象。
 func normalizeLeaderInnerWire(old *proto.Value) (*proto.Value, bool) {
 	if old == nil || old.Kind != proto.KindObj {
 		return old, false
@@ -321,22 +319,21 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 	if err != nil || def == nil {
 		return changed
 	}
-	// 渔轮顶部 f0 表示当前齿轮传动比。必须先读已安装齿轮，只有找不到
-	// 零件时才回退到母轮出厂定义；否则每次上线都会重置收线速度。
-	reelGearApplied := false
-	if class == "dgjinoebdop" {
-		if _, gearDef, _, ok := s.selectedReelPart(ctx, fields, 52); ok {
-			if ratio := itemDefF32(gearDef, gearAttrRatio); ratio > 0 {
-				idx := fieldIdxByCS(class, csStrength)
-				if setWireFloat(fields, class, idx, ratio*it.Workmanship) {
-					changed = true
-				}
-				reelGearApplied = true
-			}
-		}
-	}
-	if !reelGearApplied {
+	if class != "dgjinoebdop" {
 		if strength, ok := strengthBitsFor(def, it.Durability); ok {
+			if strength <= 0 && itemDefF32(def, gearAttrMaxLoad) <= 0 {
+				idx := fieldIdxByCS(class, csStrength)
+				if idx >= 0 && idx < len(fields) && fields[idx].Num != nil {
+					if existing := float64(proto.F32FromBits(uint32(*fields[idx].Num))); existing > 0 {
+						strength = existing
+					}
+				}
+				if estimated := s.positiveComponentParameter(ctx, def, gearAttrMaxLoad); estimated.Estimated {
+					if strength <= 0 {
+						strength = estimated.Value * clampFloat(it.Durability, 0, 1)
+					}
+				}
+			}
 			idx := fieldIdxByCS(class, csStrength)
 			if setWireFloat(fields, class, idx, strength) {
 				changed = true
@@ -357,7 +354,7 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 				// 刹车片耐久是零件自己的磨损数据（工坊修复/换件依赖它），
 				// 只在缺失（nil/0）时用母轮耐久初始化，已有值必须保留。
 				if pair.cs == csDurability && si >= 0 && si < len(sub.Fields) {
-					if f := sub.Fields[si]; f.Num != nil && proto.F32FromBits(uint32(*f.Num)) > 0 {
+					if f := sub.Fields[si]; f.Num != nil {
 						continue
 					}
 				}
@@ -377,6 +374,17 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 	}
 	if s.canonicalizeNestedItemPhysicalFields(ctx, class, fields, it.Workmanship, it.Durability) {
 		changed = true
+	}
+	if class == "dgjinoebdop" {
+		strength := s.reelLockedStrengthForFields(ctx, def, it, fields)
+		if setWireFloat(fields, class, fieldIdxByCS(class, csStrength), strength) {
+			changed = true
+		}
+	}
+	if class == "oldfpclaabo" {
+		if setWireFloat(fields, class, fieldIdxByCS(class, csStrength), leaderFieldsStrength(fields, it.Durability)) {
+			changed = true
+		}
 	}
 	return changed
 }
@@ -398,7 +406,7 @@ func (s *Server) canonicalizeNestedItemPhysicalFields(ctx context.Context, class
 	case "dgjinoebdop":
 		appendRange(2, 14)
 	case "oldfpclaabo":
-		appendRange(1, 2)
+		appendRange(1, 3)
 	case "ioombppcnlh":
 		if len(fields) > 0 && fields[0].Val != nil {
 			objs = append(objs, fields[0].Val.Items...)
@@ -414,12 +422,13 @@ func (s *Server) canonicalizeNestedItemPhysicalFields(ctx context.Context, class
 		}
 		// 子件耐久是零件自己的磨损数据（工坊修复/换件依赖它），
 		// 只在缺失（nil/0）时用母物品耐久初始化，已有值必须保留。
+		// 前导材料和出厂钩的零耐久表示损坏，不能重新初始化。
 		if si := fieldIdxByCS(obj.Class, csDurability); si >= 0 && si < len(obj.Fields) {
 			cur := 0.0
 			if f := obj.Fields[si]; f.Num != nil {
 				cur = float64(proto.F32FromBits(uint32(*f.Num)))
 			}
-			if cur <= 0 && setWireFloat(obj.Fields, obj.Class, si, durability) {
+			if (obj.Fields[si].Num == nil || (cur <= 0 && class != "oldfpclaabo" && class != "ioombppcnlh" && obj.Class != "loedbndnill")) && setWireFloat(obj.Fields, obj.Class, si, durability) {
 				changed = true
 			}
 		}
@@ -437,9 +446,13 @@ func (s *Server) canonicalizeNestedItemPhysicalFields(ctx context.Context, class
 			strength = itemDefF32(def, gearAttrRatio) * workmanship
 			strengthOK = strength > 0
 		} else {
-			strength, strengthOK = strengthBitsFor(def, durability)
+			partDurability := durability
+			if si := fieldIdxByCS(obj.Class, csDurability); si >= 0 && si < len(obj.Fields) && obj.Fields[si].Num != nil {
+				partDurability = float64(proto.F32FromBits(uint32(u64Of(obj.Fields[si].Num))))
+			}
+			strength, strengthOK = strengthBitsFor(def, partDurability)
 		}
-		if strengthOK && strength > 0 {
+		if strengthOK && (strength > 0 || class == "oldfpclaabo" || class == "ioombppcnlh") {
 			if setWireFloat(obj.Fields, obj.Class, fieldIdxByCS(obj.Class, csStrength), strength) {
 				changed = true
 			}
@@ -472,7 +485,7 @@ func canonicalizeNestedItemContainers(class string, fields []proto.Field) bool {
 			setObj(fields[i].Val)
 		}
 	case "oldfpclaabo":
-		for i := 1; i <= 2 && i < len(fields); i++ {
+		for i := 1; i <= 3 && i < len(fields); i++ {
 			setObj(fields[i].Val)
 		}
 	case "ioombppcnlh":
@@ -692,6 +705,9 @@ func (s *Server) buildFactoryChild(ctx context.Context, rod *store.Item, sysID s
 	// 并将部件物理强度按 0 处理。
 	setFloat(csWorkmanship, rod.Workmanship)
 	setFloat(csDurability, rod.Durability)
+	if strength, ok := strengthBitsFor(def, rod.Durability); ok {
+		setFloat(csStrength, strength)
+	}
 	setState(base)
 	// parent 指向竿
 	if idx := fieldIdxByCS(cls.Class, csParent); idx >= 0 {

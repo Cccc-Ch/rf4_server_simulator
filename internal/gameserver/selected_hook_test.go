@@ -123,6 +123,7 @@ func TestSelectedHookReloadKeepsOtherMissingRequestsAcrossRestart(t *testing.T) 
 
 func TestSelectedHookRollUsesEachHooksDefinitionAndBaitSnapshot(t *testing.T) {
 	s, db := newRigTestServer(t)
+	enableLegacyGearCap(t, s)
 	rod, _, groups := selectedHookMarineRig(t, s, []string{"worm_01", "muckworm"})
 	for i, g := range groups {
 		row, err := db.GetItemByGUID(t.Context(), g.hookGUID)

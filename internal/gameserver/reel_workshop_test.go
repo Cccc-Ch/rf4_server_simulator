@@ -129,7 +129,7 @@ func TestWorkshopOrderRefreshesDragVersionAndPerformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantLocked := 3.5 * 1.4 * reelBearingFactor(10)
+	wantLocked := 3.4 // 换刹车片只改变泄力，不增加轮体锁轮承力。
 	if math.Abs(perf.BaseDragKg-3.5) > 0.001 || math.Abs(perf.LockedDragKg-wantLocked) > 0.001 {
 		t.Fatalf("轮子物理参数=%+v，期望 base=3.5 locked=%f", perf, wantLocked)
 	}
@@ -194,16 +194,19 @@ func TestReelWorkshopStatsSurviveRelogTreeBuild(t *testing.T) {
 	}
 	si := fieldIdxByCS(tree.Class, csStrength)
 	if si < 0 || si >= tree.FieldCount() || tree.Fields[si].Num == nil {
-		t.Fatal("轮子树缺少传动比字段")
+		t.Fatal("轮子树缺少承力字段")
 	}
-	gotRatio := float64(proto.F32FromBits(uint32(u64Of(tree.Fields[si].Num))))
+	gotStrength := float64(proto.F32FromBits(uint32(u64Of(tree.Fields[si].Num))))
 	_, gearDef, _, ok := srv.selectedReelPart(ctx, tree.Fields, 52)
 	if !ok || gearDef == nil || gearDef.ItemID != "rgm_zmn_jet_jsg-r" {
 		t.Fatalf("重登后齿轮=%v ok=%v，期望保留JSG-R", gearDef, ok)
 	}
-	wantRatio := itemDefF32(gearDef, gearAttrRatio) * fresh.Workmanship
-	if math.Abs(gotRatio-wantRatio) > 0.001 {
-		t.Fatalf("重登后传动比=%f，期望保留改装值%f", gotRatio, wantRatio)
+	if ratio := itemDefF32(gearDef, gearAttrRatio); ratio <= 0 {
+		t.Fatal("已安装齿轮缺少传动比")
+	}
+	perf, err := srv.syncReelPerformance(ctx, fresh)
+	if err != nil || math.Abs(gotStrength-perf.LockedDragKg) > 0.001 {
+		t.Fatalf("重登后承力=%f，与服务端锁轮模型不一致: %+v %v", gotStrength, perf, err)
 	}
 
 	drag, dragDef, _, ok := srv.selectedReelPart(ctx, tree.Fields, 9)
@@ -278,7 +281,7 @@ func TestReelOverloadUsesDurabilityStages(t *testing.T) {
 		t.Fatalf("轮子耐久=%f，期望 0.8", fresh.Durability)
 	}
 	perf, _ := db.GetReelPerformance(ctx, reel.GUID)
-	if math.Abs(perf.LockedDragKg-perf.BaseDragKg*1.3*perf.BearingFactor) > 0.001 {
+	if math.Abs(perf.LockedDragKg-3.4*1.3/1.4) > 0.001 {
 		t.Fatalf("80%% 耐久锁轮参数错误: %+v", perf)
 	}
 	if got, _ := db.GetItemByGUID(ctx, reel.GUID); got == nil {

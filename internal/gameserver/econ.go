@@ -104,7 +104,7 @@ func (s *Server) fishingEnd(ctx *Ctx) ([]byte, bool) {
 		pending.XP = xp
 		pending.Silver = silver
 		// 对本次钓组组件施加钓获磨损。
-		s.wearRigForCatch(cctx, st.GearGuid)
+		s.wearRigForCatchPersisted(cctx, st.GearGuid, pending)
 		st.mu.Lock()
 		st.LastSkill = skillID
 		st.mu.Unlock()

@@ -124,7 +124,7 @@ func TestFishMarketFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	importFishStaticForProbe(t, db)
-	gsAddr, _ := startGameserverWithDB(t, db)
+	gsAddr, srv := startGameserverWithDB(t, db)
 	gw := testutil.StartGateway(t, gsAddr, testutil.TestPSK)
 
 	token, uid := gw.Login(t)
@@ -165,6 +165,20 @@ func TestFishMarketFlow(t *testing.T) {
 		t.Fatal("背包里没有竿（starter 播种失败？）")
 	}
 
+	hook, err := srv.CreateItem(cctx, uid, "c_hook_20839", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := srv.rigSetComponent(cctx, uid, rodGUID, catHook, hook.GUID, 0, rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true}); result.Rejected || result.MountedGUID == "" {
+		t.Fatalf("hook mount: %+v", result)
+	}
+	bait, err := srv.CreateItem(cctx, uid, "worm_01", "backpack", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := srv.rigSetComponent(cctx, uid, rodGUID, catBait, bait.GUID, 0, rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true}); result.Rejected || result.MountedGUID == "" {
+		t.Fatalf("bait mount: %+v", result)
+	}
 	// 14/1 → 14/2
 	fc.SendRequest(201, 14, 1, bodyWithGUIDs(rodGUID)...)
 	if resp := fc.WaitResponse(3 * time.Second); resp == nil || resp.Body[0] != 0x01 {

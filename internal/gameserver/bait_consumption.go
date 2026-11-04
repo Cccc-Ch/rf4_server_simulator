@@ -227,10 +227,13 @@ func (s *Server) applyBaitedHookSpec(ctx context.Context, group baitedHookSet, s
 	if def == nil || def.Category != catHook || durability <= 0 {
 		return false
 	}
+	if spec.BrokenPart == "hook" {
+		spec.BrokenPart = ""
+	}
 	spec.HookPresent = true
 	spec.HookSize = itemDefInt(def, gearAttrHookSize)
 	spec.HookLengthMM = itemDefF32(def, gearAttrHookLen)
-	spec.HookStrengthKg = itemDefF32(def, gearAttrMaxLoad) * clampFloat(durability, 0, 1)
+	spec.HookStrengthKg = s.positiveComponentParameter(ctx, def, gearAttrMaxLoad).Value * clampFloat(durability, 0, 1)
 	return true
 }
 

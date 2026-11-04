@@ -22,7 +22,7 @@ var reelPartKeys = []string{
 	"dfjpnambjcj",
 }
 
-// leaderPartKeys 保存前导子实例键：f1 钢丝、f2 配件；f3 没有嵌套配置。
+// leaderPartKeys 保存前导子实例键：f1 钢丝、f2 配件、f3 制作时选用的主线。
 var leaderPartKeys = []string{"mbnambppbom", "lbadjgllglo", "baadhdmaonp"}
 
 // subUnbuildedKinds 列出暂不物化的子部件类型。当前为空：
@@ -208,16 +208,12 @@ func itoa(v int) string {
 	return string(buf[i:])
 }
 
-// strengthBitsFor 返回物品强度。渔轮的齿轮强度是传动比 oiaplokhcii.dpgbopbanal
-// （官方观测 3.4..11.7），摩擦制动力 omghfmdfjpc 只写在刹车片子上，两者不能是同一个数。
-// 其他类型读取顶层 kngaaefkpka。实例强度等于定义值乘以耐久。
+// strengthBitsFor 返回出厂承力；渔轮改装后的承力在统一投影入口计算。
 func strengthBitsFor(def *store.ItemDef, durability float64) (float64, bool) {
 	if def != nil && def.Category == 6 {
-		ratio := reelGearRatio(def)
-		if ratio <= 0 {
-			return 0, false
-		}
-		return ratio * durability, true
+		quality := nestedNumber(itemDefNested(def, "fkmdfljgann"), reelPartQualityAttr, 100)
+		strength := reelLockedLoadKg(def, reelDragMaxKg(def), durability, reelBearingFactor(quality))
+		return strength, strength > 0
 	}
 	attrs := defAttrs(def)
 	if attrs == nil {

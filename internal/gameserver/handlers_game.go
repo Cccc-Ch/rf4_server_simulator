@@ -663,6 +663,8 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 	st.mu.Lock()
 	st.GearGuid = gear
 	st.CastPosX, st.CastPosZ, st.HasCastPos = castX, castZ, hasCastPos
+	st.castGeneration++
+	st.NativeReport = nil
 	st.mu.Unlock()
 	if err := ctx.Sess.prepareBaitForCast(st, gear); err != nil {
 		ctx.Log.Warn("抛竿前补饵失败", "err", err)
@@ -843,6 +845,7 @@ func hFishingStep(ctx *Ctx) ([]byte, bool) {
 			strs := treeStrsDeep(o)
 			st := ctx.Sess.Srv.stateFor(ctx.Sess.Userid)
 			st.mu.Lock()
+			st.sampleFightTime(time.Now(), ctx.Sess.ID)
 			st.TickSeen = true
 			st.TickSeq = seq
 			// 每帧按当前动画位重算，不保留上一帧的就位状态。
@@ -1009,11 +1012,7 @@ func hFishingLeft(ctx *Ctx) ([]byte, bool) {
 
 func hFishingGen(ctx *Ctx) ([]byte, bool) { return nil, true } // fire-and-forget
 func hFishingLoad(ctx *Ctx) ([]byte, bool) {
-	st := ctx.Sess.Srv.stateFor(ctx.Sess.Userid)
-	st.mu.Lock()
-	st.Hooked = true
-	st.mu.Unlock()
-	ctx.Sess.Push4_22Full()
+	recordNativeFishingReport(ctx)
 	return nil, true
 }
 

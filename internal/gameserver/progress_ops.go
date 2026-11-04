@@ -84,7 +84,7 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ri
 	f.XP = r.totalXP
 	f.Silver = r.silver
 	// 同步钓获磨损到列、fields_json 和版本戳。
-	s.wearRigForCatchPersisted(ctx, stGearOf(s, uid))
+	s.wearRigForCatchPersisted(ctx, stGearOf(s, uid), f)
 	// 结算日志：鱼种、重量、档位、经验分解与等级。
 	s.log.Info("14/4 结算",
 		"鱼种", f.Species, "重量", f.WeightG, "grade", f.Grade,
@@ -97,22 +97,35 @@ func (s *Server) settleCatchXP(ctx context.Context, uid int64, f *RolledFish, ri
 // 磨损槽位使用 item category，而不是客户端序号。鱼线与前导按承力线计算，
 // 钩、拟饵和浮漂分别使用各自的磨损率。
 var persistedSlotWearKey = map[int64]string{
-	catLine:  "line",
-	catLead:  "line",
+	catLine:         "line",
+	catLead:         "line",
+	gearCatLeadcore: "line", catLeaderLock: "line", catWireLeader: "line", gearCatReel: "reel",
 	catHook:  "hook",
 	catLure:  "lure",
 	catBait:  "bait",
 	catFloat: "float",
 }
 
-func (s *Server) wearRigForCatchPersisted(ctx context.Context, rigGUID string) {
+func (s *Server) wearRigForCatchPersisted(ctx context.Context, rigGUID string, fish ...*RolledFish) {
 	if rigGUID == "" || s.DB == nil {
 		return
 	}
+	var f *RolledFish
+	if len(fish) > 0 {
+		f = fish[0]
+	}
+	var uid int64
+	if row, _ := s.DB.GetItemByGUID(ctx, rigGUID); row != nil {
+		uid = row.UID
+	}
+	model := s.catchWearForFish(ctx, uid, rigGUID, f)
+
 	applyWear := func(row *store.Item, key string, amount float64, slot, ordinal int64) {
 		if row == nil || amount <= 0 {
 			return
 		}
+		modeled, modelDetail := s.catchWearAmount(ctx, model, row, key)
+		amount = modeled
 		before := row.Durability
 		newD := math.Max(0, before-amount)
 		if math.Abs(newD-before) < 1e-9 {
@@ -122,7 +135,8 @@ func (s *Server) wearRigForCatchPersisted(ctx context.Context, rigGUID string) {
 			s.log.Warn("钓获磨损写库失败", "guid", shortGUID(row.GUID), "err", err)
 			return
 		}
-		detail := damageDetailJSON(map[string]any{"slot": slot, "ordinal": ordinal, "category": key})
+		modelDetail["slot"], modelDetail["ordinal"] = slot, ordinal
+		detail := damageDetailJSON(modelDetail)
 		if err := s.DB.AddItemDamageLog(ctx, store.ItemDamageLog{
 			UID: row.UID, ItemGUID: row.GUID, ItemID: row.ItemID, Event: damageEventWear,
 			BeforeDurability: ptrFloat64(before), AfterDurability: ptrFloat64(newD), DetailJSON: detail,

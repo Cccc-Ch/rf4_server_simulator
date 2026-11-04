@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 
+	"rf4server/internal/proto"
 	"rf4server/internal/store"
 )
 
@@ -18,24 +19,26 @@ const (
 	gearCatLine       = int64(11)
 	gearCatLeader     = int64(13)
 	gearCatLeaderWire = int64(15)
+	gearCatLeadcore   = int64(57)
 
-	gearAttrMaxLoad  = "kngaaefkpka"
-	gearAttrDiameter = "ciichedlnjh"
-	gearAttrLength   = "hkgndoipdlc"
-	gearAttrWeight   = "dhlkahnodoo"
-	gearAttrTestMin  = "dakogfmkclb"
-	gearAttrTestMax  = "jfebacgmlmb"
-	gearAttrTaper    = "ddebfbbjppk"
-	gearAttrStretch  = "aomkdnjcgji"
-	gearAttrDensity  = "lgjeahdobch"
-	gearAttrLineLen  = "ljnnpokapig"
-	gearAttrDrag     = "mlfjkaoicdn"
-	gearAttrGear     = "oiaplokhcii"
-	gearAttrDragMax  = "omghfmdfjpc"
-	gearAttrRatio    = "dpgbopbanal"
-	gearAttrLeaderIn = "mbnambppbom"
-	gearAttrHookSize = "gkfbafmbpam"
-	gearAttrHookLen  = "najajfakhdo"
+	gearAttrMaxLoad    = "kngaaefkpka"
+	gearAttrDiameter   = "ciichedlnjh"
+	gearAttrLength     = "hkgndoipdlc"
+	gearAttrWeight     = "dhlkahnodoo"
+	gearAttrTestMin    = "dakogfmkclb"
+	gearAttrTestMax    = "jfebacgmlmb"
+	gearAttrTaper      = "ddebfbbjppk"
+	gearAttrStretch    = "aomkdnjcgji"
+	gearAttrDensity    = "lgjeahdobch"
+	gearAttrLineLen    = "ljnnpokapig"
+	gearAttrDrag       = "mlfjkaoicdn"
+	gearAttrGear       = "oiaplokhcii"
+	gearAttrDragMax    = "omghfmdfjpc"
+	gearAttrRatio      = "dpgbopbanal"
+	gearAttrLeaderIn   = "mbnambppbom"
+	gearAttrLeaderLock = "lbadjgllglo"
+	gearAttrHookSize   = "gkfbafmbpam"
+	gearAttrHookLen    = "najajfakhdo"
 
 	// hookWeightVolumeFactor 把钩体长度(mm)换算成可入口鱼重上限(g)：
 	// cap = factor * length^3。立方关系对应鱼体长度/嘴口径的比例关系，
@@ -49,29 +52,54 @@ const (
 // rigGearIDs 返回当前钓组用于物理判定的 systemID。
 // 空字符串表示数据缺失，该部件不参与最弱环计算。
 type rigGearIDs struct {
-	Rod              string
-	Reel             string
-	ReelGUID         string
-	Line             string
-	Leader           string
-	RodDurability    float64
-	ReelDurability   float64
-	LineDurability   float64
-	LeaderDurability float64
+	Rod                 string
+	Reel                string
+	ReelGUID            string
+	Line                string
+	LineGUID            string
+	LeaderGUID          string
+	Leader              string
+	LeadcoreGUID        string
+	Leadcore            string
+	LeadcoreDurability  float64
+	Connector           string
+	ConnectorGUID       string
+	ConnectorDurability float64
+	RodDurability       float64
+	ReelDurability      float64
+	LineDurability      float64
+	LeaderDurability    float64
 }
 
 // gearPhysicsSpec 是 item_def 解码后的物理量快照（kg/mm/m/比例）。
 type gearPhysicsSpec struct {
-	RodPowerKg       float64
-	LineStrengthKg   float64
-	LeaderStrengthKg float64
-	ReelPresent      bool
-	ReelDragKg       float64 // 当前耐久阶段下的锁轮承力
-	LineStretch      float64
-	HookPresent      bool
-	HookStrengthKg   float64
-	HookLengthMM     float64
-	HookSize         int64
+	Components                                  []fishingComponentInput
+	BrokenPart                                  string
+	Water                                       fightWaterContext
+	RigType, RodType                            int64
+	RodLengthM, RodTaper                        float64
+	LineDiameterMM, LineLengthM, LineDensityGPM float64
+	LineMaterial                                int64
+	LinePresent                                 bool
+	LineOutM                                    *float64 // 已核准的主线放出长度；nil 表示未知。
+	FixedRigLengthM                             *float64 // 本体固定段，不能与水深混用。
+	ReelBaseDragKg                              float64
+	ReelEffectiveDragKg                         *float64 // 摩擦片自己的耐久参与普通泄力；零是有效值。
+	ReelDragCurve                               reelDragCurve
+	InvalidLeader                               bool
+	RodPowerKg                                  float64
+	LineStrengthKg                              float64
+	LeaderStrengthKg                            float64
+	LeadcoreStrengthKg                          float64
+	Motor                                       reelMotorSpec
+	ConnectorStrengthKg                         float64
+	ReelPresent                                 bool
+	ReelDragKg                                  float64 // 当前耐久阶段下的锁轮承力
+	LineStretch                                 float64
+	HookPresent                                 bool
+	HookStrengthKg                              float64
+	HookLengthMM                                float64
+	HookSize                                    int64
 }
 
 // decodeU32F32 把 attrs_json 中的 U32 数值按 IEEE-754 F32 位型还原。
@@ -180,6 +208,9 @@ func leaderStrengthKg(def *store.ItemDef) float64 {
 	}
 	if inner := itemDefNested(def, gearAttrLeaderIn); inner != nil {
 		if f := nestedF32(inner, gearAttrMaxLoad); f > 0 {
+			if lock := nestedF32(itemDefNested(def, gearAttrLeaderLock), gearAttrMaxLoad); lock > 0 && lock < f {
+				return lock
+			}
 			return f
 		}
 	}
@@ -206,46 +237,50 @@ func rodTestG(def *store.ItemDef) (float64, float64) {
 
 func rodTaper(def *store.ItemDef) float64 { return itemDefF32(def, gearAttrTaper) }
 
-// gearBreakLimitKg 返回整副钓组最弱一环的拉力；0 表示没有可信物理数据。
-// 手竿没有轮子，只比较竿/主线/子线；带轮竿额外比较锁轮承力。
-func gearBreakLimitKg(spec gearPhysicsSpec) float64 {
-	parts := []float64{spec.RodPowerKg, spec.LineStrengthKg, spec.LeaderStrengthKg}
+// gearPartLoad 使用同一 kgf 口径比较承力件，平局优先损失末端件。
+type gearPartLoad struct {
+	part string
+	kg   float64
+}
+
+func gearPartLoads(spec gearPhysicsSpec) []gearPartLoad {
+	hook, reel := 0.0, 0.0
+	if spec.HookPresent {
+		hook = spec.HookStrengthKg
+	}
 	if spec.ReelPresent {
-		parts = append(parts, spec.ReelDragKg)
+		reel = spec.ReelDragKg
+	}
+	return []gearPartLoad{
+		{"hook", hook}, {"leader_lock", spec.ConnectorStrengthKg},
+		{"leader", spec.LeaderStrengthKg}, {"leadcore", spec.LeadcoreStrengthKg}, {"line", spec.LineStrengthKg},
+		{"reel", reel}, {"rod", spec.RodPowerKg},
+	}
+}
+
+// gearBreakLimitKg 返回最弱承力件的 kgf；0 表示没有可信数据。
+func gearBreakLimitKg(spec gearPhysicsSpec) float64 {
+	if spec.BrokenPart != "" {
+		return 0
 	}
 	limit := 0.0
-	for _, p := range parts {
-		if p <= 0 {
-			continue
-		}
-		if limit == 0 || p < limit {
-			limit = p
+	for _, p := range gearPartLoads(spec) {
+		if p.kg > 0 && (limit == 0 || p.kg < limit) {
+			limit = p.kg
 		}
 	}
 	return limit
 }
 
 func gearWeakestPart(spec gearPhysicsSpec) string {
-	reelKg := 0.0
-	if spec.ReelPresent {
-		reelKg = spec.ReelDragKg
+	if spec.BrokenPart != "" {
+		return spec.BrokenPart
 	}
-	parts := []struct {
-		name string
-		kg   float64
-	}{
-		{"reel", reelKg},
-		{"rod", spec.RodPowerKg},
-		{"line", spec.LineStrengthKg},
-		{"leader", spec.LeaderStrengthKg},
-	}
-	name := ""
-	limit := 0.0
-	for _, p := range parts {
-		if p.kg <= 0 || (limit > 0 && p.kg >= limit) {
-			continue
+	name, limit := "", 0.0
+	for _, p := range gearPartLoads(spec) {
+		if p.kg > 0 && (limit == 0 || p.kg < limit) {
+			name, limit = p.part, p.kg
 		}
-		name, limit = p.name, p.kg
 	}
 	return name
 }
@@ -255,6 +290,9 @@ func gearWeakestPart(spec gearPhysicsSpec) string {
 func canLandGear(spec gearPhysicsSpec, fishWeightKg, k float64) (bool, string) {
 	if fishWeightKg <= 0 {
 		return true, ""
+	}
+	if spec.BrokenPart != "" {
+		return false, spec.BrokenPart
 	}
 	if k <= 0 {
 		k = 0.35
@@ -313,9 +351,6 @@ func hookWeightCapG(lengthMM float64, size int64) float64 {
 	if cap < 50 {
 		cap = 50
 	}
-	if cap > 2_000_000 {
-		cap = 2_000_000
-	}
 	return cap
 }
 
@@ -334,6 +369,9 @@ func (s *Server) loadGearSpec(ctx context.Context, ids rigGearIDs) gearPhysicsSp
 	var spec gearPhysicsSpec
 	if s == nil || s.DB == nil {
 		return spec
+	}
+	if s.tunableF("fight_reel_drag_curve", 0) == 1 {
+		spec.ReelDragCurve = reelDragVanilla25034
 	}
 	load := func(itemID string) *store.ItemDef {
 		itemID = strings.TrimSpace(itemID)
@@ -358,15 +396,40 @@ func (s *Server) loadGearSpec(ctx context.Context, ids rigGearIDs) gearPhysicsSp
 		}
 		return v * durability
 	}
-	spec.RodPowerKg = applyDurability(rodPowerKg(load(ids.Rod)), ids.RodDurability)
+	rodDef := load(ids.Rod)
+	spec.RodType = itemDefInt(rodDef, "fopbhlmkcpe")
+	spec.RodPowerKg = applyDurability(s.positiveComponentParameter(ctx, rodDef, gearAttrMaxLoad).Value, ids.RodDurability)
+	spec.RodLengthM, spec.RodTaper = rodLengthM(rodDef), rodTaper(rodDef)
 	spec.ReelPresent = strings.TrimSpace(ids.Reel) != ""
 	if spec.ReelPresent {
-		spec.ReelDragKg = reelDragMaxKg(load(ids.Reel)) * reelLockMultiplier(ids.ReelDurability)
+		def := load(ids.Reel)
+		spec.ReelBaseDragKg = reelDragMaxKg(def)
+		factor := reelBearingFactor(nestedNumber(itemDefNested(def, "fkmdfljgann"), reelPartQualityAttr, 100))
+		spec.ReelDragKg = reelLockedLoadKg(def, reelDragMaxKg(def), ids.ReelDurability, factor)
 	}
 	lineDef := load(ids.Line)
-	spec.LineStrengthKg = applyDurability(lineStrengthKg(lineDef), ids.LineDurability)
+	spec.LinePresent = lineDef != nil
+	spec.LineStrengthKg = applyDurability(s.positiveComponentParameter(ctx, lineDef, gearAttrMaxLoad).Value, ids.LineDurability)
 	spec.LineStretch = lineStretch(lineDef)
+	spec.LineDiameterMM, spec.LineDensityGPM = lineDiameterMM(lineDef), lineDensityGPM(lineDef)
+	spec.LineLengthM = float64(lineLengthM(lineDef))
+	spec.LineMaterial = itemDefInt(lineDef, castAttrLineMaterial)
 	spec.LeaderStrengthKg = applyDurability(leaderStrengthKg(load(ids.Leader)), ids.LeaderDurability)
+	spec.LeadcoreStrengthKg = applyDurability(s.positiveComponentParameter(ctx, load(ids.Leadcore), gearAttrMaxLoad).Value, ids.LeadcoreDurability)
+	spec.ConnectorStrengthKg = applyDurability(s.positiveComponentParameter(ctx, load(ids.Connector), gearAttrMaxLoad).Value, ids.ConnectorDurability)
+	for _, p := range []struct {
+		part, id   string
+		durability float64
+	}{
+		{"leader_lock", ids.Connector, ids.ConnectorDurability}, {"leader", ids.Leader, ids.LeaderDurability},
+		{"leadcore", ids.Leadcore, ids.LeadcoreDurability},
+		{"line", ids.Line, ids.LineDurability}, {"reel", ids.Reel, ids.ReelDurability}, {"rod", ids.Rod, ids.RodDurability},
+	} {
+		if p.id != "" && p.durability <= 0 {
+			spec.BrokenPart = p.part
+			break
+		}
+	}
 	return spec
 }
 
@@ -374,19 +437,59 @@ func (s *Server) loadGearSpec(ctx context.Context, ids rigGearIDs) gearPhysicsSp
 // 拟饵出厂钩可能没有独立 item 行，因此通过物化后的钩树反查 numeric_id。
 func (s *Server) loadGearSpecForRig(ctx context.Context, ids rigGearIDs, rodGUID string) gearPhysicsSpec {
 	spec := s.loadGearSpec(ctx, ids)
-	if ids.ReelGUID != "" {
-		if row, err := s.DB.GetItemByGUID(ctx, ids.ReelGUID); err == nil && row != nil {
-			if perf, perr := s.syncReelPerformance(ctx, row); perr == nil {
-				spec.ReelPresent = true
-				spec.ReelDragKg = perf.LockedDragKg
+	spec.RigType = s.rigTypeForWrite(ctx, rodGUID)
+	spec.Components = s.mountedFishingComponents(ctx, rodGUID)
+	if spec.RigType == 1 || spec.RigType == 2 {
+		if row, err := s.DB.GetItemByGUID(ctx, rodGUID); err == nil && row != nil {
+			if fields, err := FieldsFromJSON(row.FieldsJSON); err == nil {
+				if depthCM := rigDepthOf(protoFieldAt(fields, row.WireClass, csRigObject), 0); depthCM > 0 {
+					length := float64(depthCM) / 100
+					spec.FixedRigLengthM = &length
+				}
 			}
 		}
 	}
+	if ids.Leader != "" {
+		leaderGUID := s.rigComponentGuidOf(ctx, rodGUID, catWireLeader)
+		if leaderGUID == "" {
+			leaderGUID = s.rigComponentGuidOf(ctx, rodGUID, gearCatLeader)
+		}
+		if row, err := s.DB.GetItemByGUID(ctx, leaderGUID); err == nil && row != nil && row.WireClass == "oldfpclaabo" {
+			if tree, err := s.ItemToTree(ctx, row); err == nil {
+				spec.LeaderStrengthKg = leaderFieldsStrength(tree.Fields, row.Durability)
+				if isCraftedLeader(row) && spec.LeaderStrengthKg <= 0 {
+					spec.InvalidLeader = true
+				}
+			}
+		}
+	}
+	if ids.ReelGUID != "" {
+		if row, err := s.DB.GetItemByGUID(ctx, ids.ReelGUID); err == nil && row != nil {
+			spec.Motor = s.reelMotorFromRow(ctx, row)
+			if perf, perr := s.syncReelPerformance(ctx, row); perr == nil {
+				spec.ReelPresent = true
+				spec.ReelDragKg = perf.LockedDragKg
+				spec.ReelBaseDragKg = perf.BaseDragKg
+				if condition, known := s.reelBrakeDurability(ctx, row); known {
+					effective := perf.BaseDragKg * condition
+					spec.ReelEffectiveDragKg = &effective
+					if spec.ReelDragCurve == reelDragLocalLinear {
+						spec.ReelDragKg *= condition
+					}
+				}
+			}
+		}
+	}
+	line := s.castLineStats(ctx, rodGUID, ids.Line)
+	spec.LineLengthM, spec.LineDiameterMM, spec.LineStretch, spec.LineDensityGPM, spec.LineMaterial = line.LengthM, line.DiameterMM, line.Stretch, line.LinearDensityGPM, line.Material
 	def, durability := s.mountedHookDef(ctx, rodGUID)
 	if def == nil {
 		return spec
 	}
 	spec.HookPresent = true
+	if durability <= 0 && spec.BrokenPart == "" {
+		spec.BrokenPart = "hook"
+	}
 	spec.HookSize = itemDefInt(def, gearAttrHookSize)
 	spec.HookLengthMM = itemDefF32(def, gearAttrHookLen)
 	if durability < 0 {
@@ -395,7 +498,7 @@ func (s *Server) loadGearSpecForRig(ctx context.Context, ids rigGearIDs, rodGUID
 	if durability > 1 {
 		durability = 1
 	}
-	spec.HookStrengthKg = itemDefF32(def, gearAttrMaxLoad) * durability
+	spec.HookStrengthKg = s.positiveComponentParameter(ctx, def, gearAttrMaxLoad).Value * durability
 	return spec
 }
 
@@ -426,7 +529,13 @@ func (s *Server) mountedHookDef(ctx context.Context, rodGUID string) (*store.Ite
 	if err != nil {
 		return nil, 1
 	}
-	return def, 1
+	durability := 1.0
+	if idx := fieldIdxByCS(tree.Class, csDurability); idx >= 0 && idx < len(tree.Fields) {
+		if field := tree.Fields[idx]; field.Num != nil {
+			durability = float64(proto.F32FromBits(uint32(u64Of(field.Num))))
+		}
+	}
+	return def, durability
 }
 
 // gearWeightCapForRig 读取当前手持竿的物理件并返回可搏鱼体重上限（kg）。
@@ -483,6 +592,15 @@ func (s *Server) rigGearIDs(ctx context.Context, uid int64, rodGUID string) rigG
 		}
 	}
 
+	out.ConnectorGUID = compGUIDs[catLeaderLock]
+	out.LeadcoreGUID = compGUIDs[gearCatLeadcore]
+	out.Leadcore, out.LeadcoreDurability = s.itemSystemIDDurabilityByGUID(ctx, out.LeadcoreGUID)
+	out.Connector, out.ConnectorDurability = s.itemSystemIDDurabilityByGUID(ctx, out.ConnectorGUID)
+	out.LineGUID = compGUIDs[gearCatLine]
+	out.LeaderGUID = compGUIDs[gearCatLeaderWire]
+	if out.LeaderGUID == "" {
+		out.LeaderGUID = compGUIDs[gearCatLeader]
+	}
 	out.ReelGUID = compGUIDs[gearCatReel]
 	out.Reel, out.ReelDurability = s.itemSystemIDDurabilityByGUID(ctx, out.ReelGUID)
 	out.Line, out.LineDurability = s.itemSystemIDDurabilityByGUID(ctx, compGUIDs[gearCatLine])

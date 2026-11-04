@@ -2553,3 +2553,61 @@ func hexHead(b []byte, n int) string {
 func baitSlotCount(rigType int64) int {
 	return max(2, len(slotIndicesFor(rigType, catHook)))
 }
+
+func rigProjectionFields(class string, fields []proto.Field) []store.RigComponent {
+	idx := fieldIdxByCS(class, csRigObject)
+	if idx < 0 || idx >= len(fields) {
+		return nil
+	}
+	rigType := int64(0)
+	if f5 := fields[idx].Val; f5 != nil {
+		if _, rt, ok := rigIdentity(f5); ok {
+			rigType = rt
+		}
+	}
+	comps := rigCompsOf(fields[idx].Val)
+	out := make([]store.RigComponent, 0, len(comps)+2)
+	keys := make([]int64, 0, len(comps))
+	for key := range comps {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ci, cj := rigCompCategory(keys[i]), rigCompCategory(keys[j])
+		if ci != cj {
+			return ci < cj
+		}
+		return rigCompOrdinal(keys[i]) < rigCompOrdinal(keys[j])
+	})
+	for _, key := range keys {
+		c := comps[key]
+		if c.GUID == "" {
+			continue
+		}
+		cat, ordinal := rigCompCategory(key), rigCompOrdinal(key)
+		if _, special := categorySlotField[cat]; special {
+			continue // 线/轮从 f3/f4 补，保持与客户端 153 结构一致
+		}
+		out = append(out, store.RigComponent{
+			Slot: cat, Ordinal: ordinal, GUID: c.GUID,
+			Extra: canonicalIndexForOrdinal(cat, c.Extra, rigType, ordinal),
+		})
+	}
+	for _, cat := range []int64{catReel, catLine} {
+		csName := categorySlotField[cat]
+		sidx := fieldIdxByCS(class, csName)
+		if sidx < 0 || sidx >= len(fields) || !validRigGUID(fields[sidx].Hex) {
+			continue
+		}
+		out = append(out, store.RigComponent{Slot: cat, Ordinal: 0, GUID: fields[sidx].Hex})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Extra != out[j].Extra {
+			return out[i].Extra < out[j].Extra
+		}
+		if out[i].Slot != out[j].Slot {
+			return out[i].Slot < out[j].Slot
+		}
+		return out[i].Ordinal < out[j].Ordinal
+	})
+	return out
+}

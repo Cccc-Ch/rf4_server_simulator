@@ -88,11 +88,11 @@ func TestGearWeightCapIncludesHookStrengthAndHookSize(t *testing.T) {
 		RodPowerKg: 100, LineStrengthKg: 100, LeaderStrengthKg: 100,
 		HookPresent: true, HookStrengthKg: 80, HookLengthMM: 5, HookSize: 12, LineStretch: 0,
 	}
-	if got := gearWeakestPart(spec); got != "rod" {
-		t.Fatalf("最弱断件=%q，期望 rod；鱼钩只限制派鱼口径，不进入用户定义的炸杆链", got)
+	if got := gearWeakestPart(spec); got != "hook" {
+		t.Fatalf("最弱断件=%q，期望 hook", got)
 	}
-	if got := gearBreakLimitKg(spec); math.Abs(got-100) > 1e-9 {
-		t.Fatalf("承力链限额=%f，期望竿/线/子线 100kg", got)
+	if got := gearBreakLimitKg(spec); math.Abs(got-80) > 1e-9 {
+		t.Fatalf("承力链限额=%f，期望鱼钩 80kg", got)
 	}
 	// 5mm 钩按立方口径上限 = 8 * 5^3 = 1000g，再允许 35% 控鱼余量。
 	if got := gearWeightCapKg(spec); math.Abs(got-1.35) > 1e-9 {
@@ -259,6 +259,7 @@ func TestTrophyLuckSamplesRealWeight(t *testing.T) {
 
 func TestPoolRollHonorsDynamicGearCap(t *testing.T) {
 	srv := NewServer(config.Game{Tunnel: config.Tunnel{PSK: "poolcap"}}, logging.Discard(), nil)
+	enableLegacyGearCap(t, srv)
 	overOldMockCap := false
 	for i := 0; i < 300; i++ {
 		f := srv.rollFishPoolsWithRules("lvl2_01", 0.9, neutralFishingSkillBonus())
@@ -291,7 +292,7 @@ func TestFishingBonusUsesActualRigSkillCategory(t *testing.T) {
 	srv := NewServerForGearTest(t, db)
 
 	bottom := srv.fishingBonus(ctx, uid, 12)
-	// 未确认节点不叠加通用效果，effect = 10 * 0.15 = 1.5
+	// 未确认作用的节点不附加通用效果，只使用本体熟练度。
 	if math.Abs(bottom.BiteSpeed-(1.0-1.5/10.0*0.03)) > 1e-9 {
 		t.Fatalf("bottom bite_speed=%f", bottom.BiteSpeed)
 	}
@@ -306,7 +307,7 @@ func TestFishingBonusUsesActualRigSkillCategory(t *testing.T) {
 	}
 }
 
-func TestReelStrengthUsesGearRatioNotDrag(t *testing.T) {
+func TestReelStrengthUsesLockedLoadNotGearRatio(t *testing.T) {
 	def := &store.ItemDef{
 		Category: 6,
 		AttrsJSON: attrsJSON(t, map[string]any{
@@ -315,8 +316,8 @@ func TestReelStrengthUsesGearRatioNotDrag(t *testing.T) {
 		}),
 	}
 	got, ok := strengthBitsFor(def, 1)
-	if !ok || math.Abs(got-4) > 1e-3 {
-		t.Fatalf("渔轮强度=%v ok=%v，期望传动比 4，不能等于摩擦 35.4", got, ok)
+	if !ok || math.Abs(got-35.4*1.4) > 1e-3 {
+		t.Fatalf("渔轮承力=%v ok=%v，期望缺原值时按泄力和锁轮倍率估算", got, ok)
 	}
 	if drag := reelDragMaxKg(def); math.Abs(drag-35.4) > 0.05 {
 		t.Fatalf("摩擦制动力=%f，期望 35.4", drag)
@@ -336,10 +337,38 @@ func TestDBRollHonorsDynamicGearCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := NewServerForGearTest(t, db)
+	enableLegacyGearCap(t, srv)
+	matched := 0
 	for i := 0; i < 300; i++ {
 		f := srv.rollFishFromDBWithRules("level_001_lake", "", 0.25, neutralFishingSkillBonus())
-		if f == nil || f.WeightG > 250 {
+		if f == nil {
+			continue
+		}
+		matched++
+		if f.WeightG > 250 {
 			t.Fatalf("DB 体重=%v，超过物理上限250g", f)
 		}
+	}
+	if matched == 0 {
+		t.Fatal("没有匹配的鱼")
+	}
+}
+
+func TestDragSlipIsNotStructuralBreak(t *testing.T) {
+	spec := gearPhysicsSpec{RodPowerKg: 25, LineStrengthKg: 15, LeaderStrengthKg: 12, ReelDragKg: 1}
+	if limit := gearBreakLimitKg(spec); limit != 12 {
+		t.Fatalf("drag selected as structural limit: %g", limit)
+	}
+	if part := gearWeakestPart(spec); part != "leader" {
+		t.Fatalf("wrong break part: %s", part)
+	}
+	if ok, part := canLandGear(spec, 10, .35); !ok || part != "" {
+		t.Fatalf("slipping drag broke tackle: %v %s", ok, part)
+	}
+	if ok, part := canLandGear(spec, 40, .35); ok || part != "leader" {
+		t.Fatalf("real overload not detected: %v %s", ok, part)
+	}
+	if got := gearBreakLimitKg(gearPhysicsSpec{ReelDragKg: 35}); got != 0 {
+		t.Fatalf("unknown structure fabricated from drag: %g", got)
 	}
 }

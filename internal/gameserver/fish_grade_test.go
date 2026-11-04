@@ -140,6 +140,7 @@ func TestAdminFishUsesRealWeightAndSurvivesRestart(t *testing.T) {
 
 func TestLuckyRollGradeUsesCappedWeight(t *testing.T) {
 	s, db := newProgressSrv(t)
+	enableLegacyGearCap(t, s)
 	for i := 0; i < 100; i++ {
 		f := s.rollFishPoolsWithRules("loc1_02", 0.45, fishingSkillBonus{BiteSpeed: 1, TrophyLuck: 2})
 		if f == nil || f.WeightG > 450 || f.Grade != s.rollGradeDB(t.Context(), f.Species, f.WeightG) {

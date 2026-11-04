@@ -123,6 +123,24 @@ func (s *Server) reelBaseDragFromRow(ctx context.Context, row *store.Item) float
 	return 0
 }
 
+// reelBrakeDurability 与本地 DLL 的摩擦片耐久乘法保持一致。
+func (s *Server) reelBrakeDurability(ctx context.Context, row *store.Item) (float64, bool) {
+	fields, err := FieldsFromJSON(row.FieldsJSON)
+	if err != nil {
+		return 0, false
+	}
+	child, _, _, ok := s.selectedReelPart(ctx, fields, 9)
+	if !ok {
+		return 0, false
+	}
+	i := fieldIdxByCS(child.Class, csDurability)
+	if i < 0 || i >= child.FieldCount() || child.Fields[i].Num == nil {
+		return 0, false
+	}
+	condition := float64(proto.F32FromBits(uint32(*child.Fields[i].Num)))
+	return clampFloat(condition, 0, 1), !math.IsNaN(condition) && !math.IsInf(condition, 0)
+}
+
 // reelPartQualityFromRow 读取轮子当前内嵌零件及静态品质。没有该零件时返回
 // 100 品质，以兼容缺少旧版内嵌配置的历史物品。
 func (s *Server) reelPartQualityFromRow(ctx context.Context, row *store.Item, category int64) (string, float64) {
@@ -145,6 +163,24 @@ func (s *Server) reelPartQualityFromRow(ctx context.Context, row *store.Item, ca
 	return "", 100
 }
 
+// reelLockedStrengthForFields 让客户端承力字段与服务端使用同一锁轮模型。
+func (s *Server) reelLockedStrengthForFields(ctx context.Context, def *store.ItemDef, row *store.Item, fields []proto.Field) float64 {
+	base := reelDragMaxKg(def) * row.Workmanship
+	if child, part, _, ok := s.selectedReelPart(ctx, fields, 9); ok {
+		base = itemDefF32(part, gearAttrDragMax) * row.Workmanship
+		if i := fieldIdxByCS(child.Class, csDragForce); i >= 0 && i < child.FieldCount() && child.Fields[i].Num != nil {
+			if force := float64(proto.F32FromBits(uint32(*child.Fields[i].Num))); force > 0 {
+				base = force
+			}
+		}
+	}
+	quality := 100.0
+	if _, part, _, ok := s.selectedReelPart(ctx, fields, 7); ok {
+		quality = float64(itemDefInt(part, reelPartQualityAttr))
+	}
+	return reelLockedLoadKg(def, base, row.Durability, reelBearingFactor(quality))
+}
+
 // syncReelPerformance 重新计算并持久化一只轮子的基础/锁轮承力。
 func (s *Server) syncReelPerformance(ctx context.Context, row *store.Item) (*store.ReelPerformance, error) {
 	base := s.reelBaseDragFromRow(ctx, row)
@@ -158,11 +194,13 @@ func (s *Server) syncReelPerformance(ctx context.Context, row *store.Item) (*sto
 	if durability > 1 {
 		durability = 1
 	}
+	def, _ := s.itemDefForRow(ctx, row)
+	fields, _ := FieldsFromJSON(row.FieldsJSON)
 	v := &store.ReelPerformance{
 		ReelGUID:       row.GUID,
 		UID:            row.UID,
 		BaseDragKg:     base,
-		LockedDragKg:   base * reelLockMultiplier(durability) * bearingFactor,
+		LockedDragKg:   s.reelLockedStrengthForFields(ctx, def, row, fields),
 		Durability:     durability,
 		BearingItemID:  bearingItemID,
 		BearingQuality: bearingQuality,

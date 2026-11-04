@@ -18,49 +18,55 @@ import (
 
 // FishState 保存单个玩家的钓鱼状态，重连后继续使用。
 type FishState struct {
-	mu           fishStateMutex
-	GearGuid     string
-	RigType      int64 // jppmjnahbpo 钓组种类（on_cast 记录；路亚族单独节奏）
-	Loc          string
-	Spot         uint64
-	DepthCM      int64 // 玩家设钓深（17/12 记入；14/1 的 158.f2 透传用）
-	CastActive   bool
-	BiteGen      uint64 // 咬钩定时器代号：每次重排递增，过期定时器自动作废
-	InWater      bool   // 14/7 动画位出现 0x400（钓组在水中）
-	NeedBite     bool   // 到点时还没入水，挂起等 0x400 再派鱼
-	CastTs       time.Time
-	FallTs       time.Time
-	FallSeen     bool
-	RigSettled   bool
-	TickSeen     bool
-	TickSeq      uint64 // 14/7 f14 客户端 tick 序号（诊断/恢复）
-	LastAnim     uint32 // 14/7 f5 上一次的动画位（仅在变更时打日志）
-	PushSent     bool
-	Hooked       bool
-	Resolved     bool
-	Pending      *RolledFish
-	biteTimer    *time.Timer
-	pendingTimer *time.Timer
-	BiteAt       time.Time     // 原定咬钩绝对时刻；硬重启后据此恢复 timer
-	Keepnet      []*RolledFish // 回退缓存（DB 权威）
-	Bait         string
-	PosX         float64 // 3/9 位置同步：世界坐标 X
-	PosZ         float64 // 3/9 位置同步：世界坐标 Z
-	HasPos       bool
-	CastPosX     float64 // 14/2 实际抛竿落点 X
-	CastPosZ     float64 // 14/2 实际抛竿落点 Z
-	HasCastPos   bool
-	LastSkill    int64       // 本次钓鱼大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
-	Armed        *RolledFish // GM 武装"下一杆必上"（唯一绕过重量上限的路径）
-	Bonus        fishingSkillBonus
-	persist      fishPersistMeta
+	NativeReport   *nativeFishingReport
+	castGeneration uint64
+	fightTickAt    time.Time
+	fightTickFish  string
+	fightSessionID uint64
+	mu             fishStateMutex
+	GearGuid       string
+	RigType        int64 // jppmjnahbpo 钓组种类（on_cast 记录；路亚族单独节奏）
+	Loc            string
+	Spot           uint64
+	DepthCM        int64 // 玩家设钓深（17/12 记入；14/1 的 158.f2 透传用）
+	CastActive     bool
+	BiteGen        uint64 // 咬钩定时器代号：每次重排递增，过期定时器自动作废
+	InWater        bool   // 14/7 动画位出现 0x400（钓组在水中）
+	NeedBite       bool   // 到点时还没入水，挂起等 0x400 再派鱼
+	CastTs         time.Time
+	FallTs         time.Time
+	FallSeen       bool
+	RigSettled     bool
+	TickSeen       bool
+	TickSeq        uint64 // 14/7 f14 客户端 tick 序号（诊断/恢复）
+	LastAnim       uint32 // 14/7 f5 上一次的动画位（仅在变更时打日志）
+	PushSent       bool
+	Hooked         bool
+	Resolved       bool
+	Pending        *RolledFish
+	biteTimer      *time.Timer
+	pendingTimer   *time.Timer
+	BiteAt         time.Time     // 原定咬钩绝对时刻；硬重启后据此恢复 timer
+	Keepnet        []*RolledFish // 回退缓存（DB 权威）
+	Bait           string
+	PosX           float64 // 3/9 位置同步：世界坐标 X
+	PosZ           float64 // 3/9 位置同步：世界坐标 Z
+	HasPos         bool
+	CastPosX       float64 // 14/2 实际抛竿落点 X
+	CastPosZ       float64 // 14/2 实际抛竿落点 Z
+	HasCastPos     bool
+	LastSkill      int64       // 本次钓鱼大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
+	Armed          *RolledFish // GM 武装"下一杆必上"（唯一绕过重量上限的路径）
+	Bonus          fishingSkillBonus
+	persist        fishPersistMeta
 }
 
 // RolledFish 待结算/已结算的鱼。
 type RolledFish struct {
-	HookGUID   string
-	BaitGUIDs  string
-	BaitsKnown bool
+	FightSeconds float64
+	HookGUID     string
+	BaitGUIDs    string
+	BaitsKnown   bool
 
 	FishGUID string
 	Species  string
@@ -405,7 +411,11 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 	if s.tunableF("fish_weather_enabled", 0) == 1 && s.weatherRigBroken(ctx, uid, gearGUID) {
 		return nil
 	}
-	capKg, ids, weakest := s.gearWeightCapForRig(ctx, uid, gearGUID)
+	ids := s.rigGearIDs(ctx, uid, gearGUID)
+	spec := s.loadGearSpecForRig(ctx, ids, gearGUID)
+	spec.Water = s.fightWaterForRig(ctx, uid, loc, spec.RigType, fightWaterSpot{Spot: c.spot, BaitDepthCM: c.depthCM, CastX: c.x, CastZ: c.z, HasCastPosition: c.hasCastPos})
+	c.specs = []gearPhysicsSpec{spec}
+	capKg, weakest := gearWeightCapKg(spec), gearWeakestPart(spec)
 	groups := s.baitedHookSets(ctx, gearGUID)
 	if len(groups) == 0 {
 		rigType := int64(0)
@@ -418,9 +428,8 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 		if capKg > 0 {
 			s.log.Info("钓鱼物理上限", "rod", ids.Rod, "reel", ids.Reel, "line", ids.Line, "leader", ids.Leader, "weakest", weakest, "cap_kg", capKg)
 		}
-		return s.rollFishWithRules(loc, bait, capKg, bonus, c)
+		return s.rollFishWithRules(loc, bait, 0, bonus, c)
 	}
-	spec := s.loadGearSpecForRig(ctx, ids, gearGUID)
 	rand.Shuffle(len(groups), func(i, j int) { groups[i], groups[j] = groups[j], groups[i] })
 	for _, group := range groups {
 		selected := spec
@@ -428,7 +437,8 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 			continue
 		}
 		c.baits = group.baits
-		f := s.rollFishWithRules(loc, group.baits[0], gearWeightCapKg(selected), bonus, c)
+		c.specs = []gearPhysicsSpec{selected}
+		f := s.rollFishWithRules(loc, group.baits[0], 0, bonus, c)
 		if f != nil {
 			f.HookGUID = group.hookGUID
 			f.BaitGUIDs, f.BaitsKnown = strings.Join(group.baitGUIDs, " "), true
@@ -580,7 +590,7 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 		scale = 1
 	}
 	capG := 0.0
-	if gearCapKg > 0 && s.tunableF("fish_weight_cap", 1) > 0 {
+	if gearCapKg > 0 && s.tunableF("fish_weight_cap", 0) > 0 {
 		capG = gearCapKg * 1000
 		if capG < 1 {
 			return nil
@@ -594,7 +604,7 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 		sample := func() float64 {
 			return float64(s.sampleWeightDB(cctx, key, s.baitWeightMode(key, c.baits), scale, capG))
 		}
-		w := int64(applyTrophyLuck(sample(), bonus.TrophyLuck, sample))
+		w := s.sampleMatchedWeight(key, func() float64 { return applyTrophyLuck(sample(), bonus.TrophyLuck, sample) / scale }, gearCapKg, c.specs...)
 		if w == 0 {
 			for i, candidate := range keys {
 				if candidate == key {
@@ -830,7 +840,7 @@ func (s *Server) rollFishPoolsWithRules(loc string, gearCapKg float64, bonus fis
 		scale = 1
 	}
 	capG := 0.0
-	if s.tunableF("fish_weight_cap", 1) > 0 {
+	if s.tunableF("fish_weight_cap", 0) > 0 {
 		capG = poolWeightCapG(gearCapKg, bonus.FightTolerance)
 		if capG > 0 {
 			eligible := make([]fishPoolEntry, 0, len(pool))
@@ -892,7 +902,10 @@ func (s *Server) rollFishPoolsWithRules(loc string, gearCapKg float64, bonus fis
 	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled >= float64(math.MaxInt64) || (capG > 0 && scaled > capG) {
 		return nil
 	}
-	weightG := int64(scaled)
+	weightG := s.sampleMatchedWeight(e.species, func() float64 { return scaled / scale }, gearCapKg, c.specs...)
+	if weightG <= 0 {
+		return nil
+	}
 	// 有 species_weight 档位线时按重量判档；缺表时使用内置 valuable 线。
 	grade := s.poolGrade(e, weightG)
 	// 体长
@@ -1060,6 +1073,10 @@ func fallbackFightStatics(weightG float64) map[int]float64 {
 		}
 		if weightG >= fallbackCalWeights[len(fallbackCalWeights)-1] {
 			out[idx] = ys[len(ys)-1]
+			// 超出小鱼校准范围后，沿用鲫鱼模板的增长指数。
+			if power, ok := fallbackGrowthPowers[idx]; ok {
+				out[idx] *= math.Pow(weightG/fallbackCalWeights[len(fallbackCalWeights)-1], power)
+			}
 			continue
 		}
 		for j := 1; j < len(fallbackCalWeights); j++ {
@@ -1094,7 +1111,7 @@ func (s *Server) fishStaminaFor(f *RolledFish) float64 {
 	}
 	stamina := f.Stamina
 	if stamina <= 0 {
-		stamina = verifiedStaminaPerGram * float64(f.WeightG)
+		stamina = verifiedStaminaPerGram * fishMassScale(float64(f.WeightG), performanceForFish(f.Species).staminaExponent) * performanceForFish(f.Species).stamina
 	}
 	scale := s.tunableF("fish_stamina_scale", defaultFishStaminaScale)
 	if scale > 0 {
@@ -1112,40 +1129,7 @@ func (s *Server) fishInitialStaminaRatio() float64 {
 }
 
 func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Value {
-	w := float64(f.WeightG)
-	st := officialSpeciesStatics[f.Species]
-	var f9, f10, f11, f12v, f13v, f14v, f15v, f16v, f17v, f18v, f19v, f20v float64
-	if st != nil {
-		f9 = staticPow(st.f9, w)
-		f10 = staticPow(st.f10, w)
-		f11 = staticPow(st.f11, w)
-		f13v = gradeMapVal(st.f13, f.Grade)
-		f14v = gradeMapVal(st.f14, f.Grade)
-		f15v = gradeMapVal(st.f15, f.Grade)
-		f12v = 0
-		f16v = 1
-		f17v = gradeMapVal(st.f17, f.Grade)
-		f18v = 1
-		f19v = staticPow(st.f19, w)
-		f20v = st.f20
-	} else {
-		fb := fallbackFightStatics(w)
-		f9, f10, f11 = fb[9], fb[10], fb[11]
-		f12v, f13v, f14v, f15v = fb[12], fb[13], fb[14], fb[15]
-		f16v, f17v, f18v = fb[16], fb[17], fb[18]
-		f19v, f20v = fb[19], fb[20]
-	}
-	stamina := s.fishStaminaFor(f)
-	initialStamina := s.fishInitialStaminaRatio()
-	pull := f.Force
-	if pull <= 0 {
-		pull = verifiedForcePerGram * w
-	}
-	// fight_power_scale：整体缩放鱼的拉力（同时影响 26 条张力曲线）。
-	// 调低可显著减少断线与收杆脱钩，调高则更硬核；默认 1.0 保持真实样本比例。
-	if k := s.tunableF("fight_power_scale", 1.0); k > 0 && k != 1.0 {
-		pull = math.Max(0.5, math.Round(pull*k*10000)/10000)
-	}
+	model := s.fishFightModel(f)
 
 	var named *string
 	name := f.Name
@@ -1168,24 +1152,24 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		0:  proto.Guid(f.FishGUID),
 		1:  proto.StrVal(f.Species),
 		2:  proto.U32(uint32(f.Grade)),
-		3:  proto.F32(float32(f.LengthM)),
-		4:  proto.U32(uint32(f.WeightG)),
-		5:  proto.F32(float32(stamina)),
-		6:  proto.F32(float32(initialStamina)),
-		8:  proto.F32(float32(pull)),
-		9:  proto.F32(float32(f9)),
-		10: proto.F32(float32(f10)),
-		11: proto.F32(float32(f11)),
-		12: proto.F32(float32(f12v)),
-		13: proto.F32(float32(f13v)),
-		14: proto.F32(float32(f14v)),
-		15: proto.F32(float32(f15v)),
-		16: proto.F32(float32(f16v)),
-		17: proto.F32(float32(f17v)),
-		18: proto.F32(float32(f18v)),
-		19: proto.F32(float32(f19v)),
-		20: proto.F32(float32(f20v)),
-		21: s.buildFightCurves(f.Species, pull),
+		3:  proto.F32(float32(model.LengthM)),
+		4:  proto.U32(uint32(model.WeightG)),
+		5:  proto.F32(float32(model.Stamina)),
+		6:  proto.F32(float32(model.FatigueResistance)),
+		8:  proto.F32(float32(model.ForceN)),
+		9:  proto.F32(float32(model.Statics[9])),
+		10: proto.F32(float32(model.Statics[10])),
+		11: proto.F32(float32(model.Statics[11])),
+		12: proto.F32(float32(model.Statics[12])),
+		13: proto.F32(float32(model.Statics[13])),
+		14: proto.F32(float32(model.Statics[14])),
+		15: proto.F32(float32(model.Statics[15])),
+		16: proto.F32(float32(model.Statics[16])),
+		17: proto.F32(float32(model.Statics[17])),
+		18: proto.F32(float32(model.Statics[18])),
+		19: proto.F32(float32(model.Statics[19])),
+		20: proto.F32(float32(model.Statics[20])),
+		21: s.buildFightCurves(f.Species, model.ForceN),
 		22: proto.Str(named),
 		23: proto.Guid(hook),
 		24: proto.Null(),
@@ -1401,7 +1385,7 @@ func (s *Server) onBiteTimer(uid int64, gen uint64) {
 	if !hasPos {
 		x, z, hasPos = st.PosX, st.PosZ, st.HasPos
 	}
-	f := s.rollFishForRig(s.dbCtx(), uid, st.GearGuid, st.Loc, st.Bait, st.Bonus, fishRollContext{x: x, z: z, hasPos: hasPos, spot: st.Spot, depthCM: st.DepthCM, now: now, weather: sess.weatherAt(st.Loc, now)})
+	f := s.rollFishForRig(s.dbCtx(), uid, st.GearGuid, st.Loc, st.Bait, st.Bonus, fishRollContext{x: x, z: z, hasPos: hasPos, hasCastPos: st.HasCastPos, spot: st.Spot, depthCM: st.DepthCM, now: now, weather: sess.weatherAt(st.Loc, now)})
 	if f == nil {
 		s.emptyWeatherBiteLocked(sess, st, now)
 		st.mu.Unlock()
@@ -1658,3 +1642,10 @@ func (s *Server) setLevel(uid int64, level string) {
 
 var _ = store.KeepnetEntry{}
 var _ = wiregen.MakeObj
+
+var fallbackGrowthPowers = map[int]float64{
+	9:  officialSpeciesStatics["crucian"].f9[1],
+	10: officialSpeciesStatics["crucian"].f10[1],
+	11: officialSpeciesStatics["crucian"].f11[1],
+	19: officialSpeciesStatics["crucian"].f19[1],
+}

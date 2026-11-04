@@ -152,7 +152,7 @@ func rolledFishToStore(f *RolledFish) *store.FishingFish {
 	if f == nil {
 		return nil
 	}
-	return &store.FishingFish{
+	return &store.FishingFish{FightSeconds: f.FightSeconds, Force: f.Force, Stamina: f.Stamina,
 		HookGUID:   f.HookGUID,
 		BaitGUIDs:  f.BaitGUIDs,
 		BaitsKnown: f.BaitsKnown,
@@ -173,7 +173,7 @@ func rolledFishFromStore(f *store.FishingFish) *RolledFish {
 	if f == nil {
 		return nil
 	}
-	return &RolledFish{
+	return &RolledFish{FightSeconds: f.FightSeconds, Force: f.Force, Stamina: f.Stamina,
 		HookGUID:   f.HookGUID,
 		BaitGUIDs:  f.BaitGUIDs,
 		BaitsKnown: f.BaitsKnown,

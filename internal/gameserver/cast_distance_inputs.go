@@ -80,14 +80,20 @@ func (s *Server) castLineStats(ctx context.Context, rodGUID, lineItemID string) 
 	if err != nil || def == nil {
 		return out
 	}
-	out.DiameterMM = lineDiameterMM(def)
+	out.DiameterMM = s.positiveComponentParameter(ctx, def, gearAttrDiameter).Value
 	out.LengthM = float64(lineLengthM(def))
 	out.Stretch = lineStretch(def)
 	out.Material = itemDefInt(def, castAttrLineMaterial)
 	out.LinearDensityGPM = lineDensityGPM(def)
-	lineGUID := s.rigComponentGuidOf(ctx, rodGUID, catLine)
+	lineGUID := ""
+	if rod, err := s.DB.GetItemByGUID(ctx, rodGUID); err == nil && rod != nil {
+		lineGUID, _ = s.storedRigItemGUID(ctx, rod, csLine)
+	}
+	if lineGUID == "" {
+		lineGUID = s.rigComponentGuidOf(ctx, rodGUID, catLine)
+	}
 	if row, rerr := s.DB.GetItemByGUID(ctx, lineGUID); rerr == nil && row != nil {
-		if n := s.itemLength(ctx, row); n > 0 {
+		if n := s.itemLength(ctx, row); n >= 0 {
 			out.LengthM = float64(n)
 		}
 	}
@@ -128,6 +134,12 @@ func (s *Server) castPayloadWeights(ctx context.Context, rodGUID string) (rigWei
 			continue
 		}
 		weight := itemDefCastWeightG(def)
+		if weight <= 0 {
+			weight = s.positiveComponentParameter(ctx, def, castAttrWaterWeight).Value
+			if weight <= 0 {
+				weight = s.positiveComponentParameter(ctx, def, gearAttrWeight).Value
+			}
+		}
 		if comp.Category == catBait || comp.Category == catLure {
 			baitWeightG += weight
 		} else {
@@ -183,16 +195,11 @@ func (s *Server) castReelSpoolStats(ctx context.Context, reel *store.Item, lineI
 	if err != nil || lineDef == nil {
 		return reelType, spoolSize, 0
 	}
-	diameter := lineDiameterMM(lineDef)
+	diameter := s.positiveComponentParameter(ctx, lineDef, gearAttrDiameter).Value
 	if diameter <= 0 {
 		return reelType, spoolSize, 0
 	}
-	// 客户端对低轮廓/鼓轮与固定线杯轮使用不同的容量常数。
-	k := 0.16588345
-	if reelType == 2 || reelType == 3 {
-		k = 0.10153155
-	}
-	capacityM = math.Max(k*coef/diameter, 5)
+	capacityM = nativeSpoolCapacityM(coef, diameter)
 	return reelType, spoolSize, capacityM
 }
 
