@@ -4,7 +4,7 @@ const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {chromium}=require('playwright');
 
 test('fishing rule switches save independently, reload and fit supported sizes and DPI',async()=>{
- const rules=[{key:'fish_bait_rules_enabled',prefix:'fishRules',default:'0'},{key:'fish_distribution_enabled',prefix:'fishDistribution',default:'0'},{key:'fish_weather_enabled',prefix:'fishWeather',default:'0'}];
+ const rules=[{key:'fish_bait_rules_enabled',prefix:'fishRules',default:'0'},{key:'fish_distribution_enabled',prefix:'fishDistribution',default:'0'},{key:'fish_weather_enabled',prefix:'fishWeather',default:'0'},{key:'level_rewards_enabled',prefix:'levelRewards',default:'1'}];
  const values={debug_mode:'1',bite_delay_fixed:'17'};
  let failRead=false,failWrite=false,writes=0;
  const html=fs.readFileSync(path.join(__dirname,'web/index.html'));
@@ -36,7 +36,8 @@ test('fishing rule switches save independently, reload and fit supported sizes a
    for(const rule of rules)delete values[rule.key];
    await page.goto(`http://127.0.0.1:${server.address().port}/admin/#fish`,{waitUntil:'networkidle'});
    await page.locator('#fishRulesToggle').waitFor();
-   assert.equal(await page.locator('#fishRulesCard button').count(),3);
+   assert.equal(await page.locator('#fishRulesCard button').count(),rules.length);
+   assert.match(await page.locator('#fishRulesCard').textContent(),/旧角色不自动补领历史升级奖励/);
    for(const rule of rules){
     assert.equal(await page.locator('#'+rule.prefix+'Toggle').getAttribute('aria-pressed'),String(rule.default==='1'));
     assert.equal(values[rule.key],undefined,'reading default values must not save a switch');
@@ -54,7 +55,7 @@ test('fishing rule switches save independently, reload and fit supported sizes a
     for(const rule of rules)assert.equal(await page.locator('#'+rule.prefix+'Toggle').textContent(),state==='1'?'关闭':'开启');
    }
    await page.locator('#fishWeatherToggle').click();await page.waitForFunction(()=>document.getElementById('fishWeatherToggle').getAttribute('aria-pressed')==='true');
-   assert.deepEqual(values,{debug_mode:'1',bite_delay_fixed:'17',fish_bait_rules_enabled:'0',fish_distribution_enabled:'0',fish_weather_enabled:'1'});
+   assert.deepEqual(values,{debug_mode:'1',bite_delay_fixed:'17',fish_bait_rules_enabled:'0',fish_distribution_enabled:'0',fish_weather_enabled:'1',level_rewards_enabled:'0'});
    await page.reload({waitUntil:'networkidle'});assert.equal(await page.locator('#fishWeatherToggle').textContent(),'关闭');
    for(const rule of rules)values[rule.key]=rule.default;
    values.fish_weather_enabled='1';await page.reload({waitUntil:'networkidle'});
@@ -86,7 +87,7 @@ test('fishing rule switches save independently, reload and fit supported sizes a
      assert.ok(b.y>=-1&&b.bottom<=b.viewport+1&&b.reachable,JSON.stringify({width,dpi,name,prefix:rule.prefix,b}));
      buttonMetrics.push({prefix:rule.prefix,width:b.width,height:b.height,font:b.font});
     }
-    if(process.env.RF4_RULES_SCREENSHOT_DIR&&dpi===1.5&&name==='normal'&&width!==1024)await page.screenshot({path:path.join(process.env.RF4_RULES_SCREENSHOT_DIR,`rules-${width}.png`),fullPage:true});
+    if(process.env.RF4_RULES_SCREENSHOT_DIR&&dpi===1.5&&name==='normal'&&width!==1024){await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:path.join(process.env.RF4_RULES_SCREENSHOT_DIR,`rules-${width}.png`),fullPage:true});}
    }
    for(const rule of rules){
     const before={...values};failWrite=true;await page.locator('#'+rule.prefix+'Toggle').click();await page.waitForFunction(prefix=>!document.getElementById(prefix+'Toggle').disabled,rule.prefix);assert.deepEqual(values,before);failWrite=false;

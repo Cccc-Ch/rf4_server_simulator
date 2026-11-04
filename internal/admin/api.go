@@ -237,7 +237,7 @@ func (s *Server) handleTunableSet(w http.ResponseWriter, r *http.Request) {
 		httpError(w, 400, "参数错误")
 		return
 	}
-	if (req.Key == "fish_bait_rules_enabled" || req.Key == "fish_distribution_enabled" || req.Key == "fish_weather_enabled") && req.Value != "0" && req.Value != "1" {
+	if (req.Key == "fish_bait_rules_enabled" || req.Key == "fish_distribution_enabled" || req.Key == "fish_weather_enabled" || req.Key == "level_rewards_enabled") && req.Value != "0" && req.Value != "1" {
 		httpError(w, 400, "鱼群开关只能为 0 或 1")
 		return
 	}
@@ -386,7 +386,17 @@ func (s *Server) handlePlayerUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, err = s.db.SQL.ExecContext(ctx, `
+	tx, err := s.db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	if err := store.RecordLevelRewardHighWaterTx(ctx, tx, req.UID, max(p.Level, lvl), float64(time.Now().Unix())); err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	_, err = tx.ExecContext(ctx, `
 		UPDATE profile SET name=?, level=?, xp=?, silver=?, gold=?, bank=?,
 		 membership=?, membership_exp=?, updated_ts=?
 		WHERE uid=?`,
@@ -394,6 +404,10 @@ func (s *Server) handlePlayerUpdate(w http.ResponseWriter, r *http.Request) {
 		apply(p.Silver, req.Silver), apply(p.Gold, req.Gold), apply(p.Bank, req.Bank),
 		membership, exp, float64(time.Now().Unix()), req.UID)
 	if err != nil {
+		httpError(w, 500, err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		httpError(w, 500, err.Error())
 		return
 	}

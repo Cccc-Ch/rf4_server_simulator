@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -44,6 +45,9 @@ func (s *Server) releaseCatchOnce(ctx context.Context, uid int64, fishGUID strin
 	if bonus < 0 {
 		bonus = 0
 	}
+	if oldXP > math.MaxInt64-bonus {
+		return result, false, fmt.Errorf("累计经验超出范围")
+	}
 	result.XP = oldXP + bonus
 	result.Level = levelForXp(result.XP)
 	if result.Level < oldLevel {
@@ -57,6 +61,9 @@ func (s *Server) releaseCatchOnce(ctx context.Context, uid int64, fishGUID strin
 	if bonus > 0 {
 		now := float64(time.Now().UnixNano()) / 1e9
 		if _, err := tx.ExecContext(ctx, `UPDATE profile SET xp=?,level=?,updated_ts=? WHERE uid=?`, result.XP, result.Level, now, uid); err != nil {
+			return result, false, err
+		}
+		if _, err := s.applyLevelRewardsTx(ctx, tx, uid, oldLevel, result.Level, now); err != nil {
 			return result, false, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO txn(uid,ts,kind,silver_delta,gold_delta,note) VALUES(?,?,'xp',0,0,'fishing_release')`, uid, now); err != nil {

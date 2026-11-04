@@ -206,6 +206,9 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	if _, err := tx.ExecContext(ctx, `UPDATE profile SET xp=?,level=?,updated_ts=? WHERE uid=?`, newXP, level, now, uid); err != nil {
 		return nil, err
 	}
+	if _, err := s.applyLevelRewardsTx(ctx, tx, uid, oldLevel, level, now); err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO txn(uid,ts,kind,silver_delta,gold_delta,note) VALUES(?,?,'xp',0,0,?)`,
 		uid, now, fmt.Sprintf("xp+%d level %d->%d", totalXP, oldLevel, level)); err != nil {
 		return nil, err
