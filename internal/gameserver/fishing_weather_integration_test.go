@@ -94,7 +94,11 @@ func TestWeatherRetryPreservesCastAndStopsWhenDisabledOrHooked(t *testing.T) {
 		timer.Stop()
 		st.mu.Lock()
 		retry := st.biteTimer != nil
-		if retry != scenario.retry || st.Pending != nil || st.PushSent || st.BiteGen != gen || !st.CastTs.Equal(castTs) {
+		wantGeneration := gen
+		if scenario.retry {
+			wantGeneration++
+		}
+		if retry != scenario.retry || st.Pending != nil || st.PushSent || st.BiteGen != wantGeneration || !st.CastTs.Equal(castTs) {
 			t.Errorf("retry state for %+v: retry=%v pending=%v pushed=%v", scenario, retry, st.Pending, st.PushSent)
 		}
 		if st.biteTimer != nil {

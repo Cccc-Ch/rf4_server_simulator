@@ -1,6 +1,7 @@
 package gameserver
 
 import (
+	"context"
 	"math"
 	"time"
 )
@@ -80,17 +81,47 @@ func (s *Server) emptyWeatherBiteLocked(sess *Session, st *FishState, now time.T
 	st.PushSent = false
 	st.Pending = nil
 	st.Resolved = true
-	if s.tunableF("fish_weather_enabled", 0) != 1 || rigTypeLureFamily[st.RigType] || st.Hooked {
+	if s.tunableF("fish_weather_enabled", 0) != 1 || rigTypeLureFamily[st.RigType] || st.Hooked || !st.CastActive || s.weatherRigBroken(s.dbCtx(), sess.Userid, st.GearGuid) {
 		return
-	}
-	if s.DB != nil && st.GearGuid != "" {
-		if rod, _ := s.DB.GetItemByGUID(s.dbCtx(), st.GearGuid); rod != nil && s.itemBrokenForMount(s.dbCtx(), rod) {
-			return
-		}
 	}
 	st.Resolved = false
 	delay := s.biteDelayInWeather(st, sess.weatherAt(st.Loc, now), now, st.Bonus)
 	st.BiteAt = now.Add(time.Duration(delay * float64(time.Second)))
+	st.BiteGen++
 	gen := st.BiteGen
 	st.biteTimer = time.AfterFunc(time.Until(st.BiteAt), func() { s.onBiteTimer(sess.Userid, gen) })
+}
+
+// 共同部件损坏或已知外置钩全部损坏时停口；缺少资料保持原行为。
+func (s *Server) weatherRigBroken(ctx context.Context, uid int64, gear string) bool {
+	if s.DB == nil || gear == "" {
+		return false
+	}
+	guids := []string{gear}
+	var hooks []string
+	if rows, err := s.DB.ListRigComponents(ctx, gear); err == nil {
+		for _, row := range rows {
+			switch row.Slot {
+			case gearCatReel, gearCatLine, gearCatLeader, gearCatLeaderWire:
+				guids = append(guids, row.GUID)
+			case catHook:
+				hooks = append(hooks, row.GUID)
+			}
+		}
+	}
+	for _, g := range guids {
+		if row, err := s.DB.GetItemByGUID(ctx, g); err == nil && row != nil && row.UID == uid && row.Durability <= 0 {
+			return true
+		}
+	}
+	knownHooks, brokenHooks := 0, 0
+	for _, g := range hooks {
+		if row, err := s.DB.GetItemByGUID(ctx, g); err == nil && row != nil && row.UID == uid {
+			knownHooks++
+			if row.Durability <= 0 {
+				brokenHooks++
+			}
+		}
+	}
+	return knownHooks > 0 && brokenHooks == knownHooks
 }

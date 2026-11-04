@@ -402,6 +402,9 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 		}
 		c.baits = s.currentBaits(ctx, gearGUID)
 	}
+	if s.tunableF("fish_weather_enabled", 0) == 1 && s.weatherRigBroken(ctx, uid, gearGUID) {
+		return nil
+	}
 	capKg, ids, weakest := s.gearWeightCapForRig(ctx, uid, gearGUID)
 	groups := s.baitedHookSets(ctx, gearGUID)
 	if len(groups) == 0 {
