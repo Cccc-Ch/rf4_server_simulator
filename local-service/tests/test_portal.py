@@ -45,11 +45,12 @@ class PortalTests(unittest.TestCase):
         self.http.shutdown(); self.http.server_close(); self.thread.join()
         self.temp.cleanup()
 
-    def request(self, method, path, token='player_one', **extra):
+    def request(self, method, path, token='player_one', data=None, **extra):
         headers={'Authorization':'Bearer '+token, **extra}
+        if data is not None: headers['Content-Type']='application/json'
         connection=http.client.HTTPConnection('127.0.0.1',self.http.server_port,timeout=3)
         try:
-            connection.request(method,path,headers=headers)
+            connection.request(method,path,body=json.dumps(data) if data is not None else None,headers=headers)
             response=connection.getresponse()
             return response.status,response.read()
         finally:
@@ -88,7 +89,6 @@ class PortalTests(unittest.TestCase):
         status,body,_=asset('/portal/')
         self.assertEqual(status,200)
         self.assertIn(b'name="username" autocomplete="username"',body)
-        self.assertNotIn(b'local-debug',body)
         self.assertNotIn(b'local-member',body.replace(b'#local-member',b''))
         for path in ('/portal/../local_server.py','/portal/%2e%2e/data/local.sqlite3','/portal/missing.js'):
             self.assertEqual(asset(path)[0],404)

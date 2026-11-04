@@ -4,7 +4,7 @@ import mimetypes
 from pathlib import Path
 import time
 from urllib.parse import unquote
-from rf4_local_options import LocalOptionsError, game_database
+from rf4_local_options import LocalOptionsError, game_database, debug_status, set_debug
 
 ROOT = Path(__file__).resolve().parent / 'web' / 'portal'
 SHARED = Path(__file__).resolve().parents[1] / 'internal' / 'portal' / 'web'
@@ -58,6 +58,21 @@ class PortalMixin:
                 self.portal_local()
                 self.reply(*static)
                 return True
+        if path == '/api/debug':
+            self.portal_user(resolve_identity)
+            if query:
+                raise LocalOptionsError(400, '调试接口不接受查询参数')
+            database = self.server.db_path.parent / 'gameplay.sqlite3'
+            if method == 'GET':
+                self.reply(200, debug_status(database))
+            elif method == 'PUT':
+                data = self.body()
+                if set(data) != {'enabled'}:
+                    raise LocalOptionsError(400, '只接受调试模式启用状态')
+                self.reply(200, set_debug(database, data['enabled']))
+            else:
+                raise LocalOptionsError(405, '调试接口不支持此操作')
+            return True
         if path not in ('/api/profile', '/portal/api/profile'):
             return False
         name, uid = self.portal_user(resolve_identity)
