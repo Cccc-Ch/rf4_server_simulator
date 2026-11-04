@@ -4,6 +4,7 @@ from collections import deque
 from contextlib import contextmanager
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -415,6 +416,10 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
 
+    def __init__(self, *args, **kwargs):
+        self.control = secrets.token_urlsafe(32)
+        super().__init__(*args, **kwargs)
+
 
 class GameServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
@@ -517,6 +522,30 @@ def local_game_uid(http, username, rowid):
             or (name not in identities and uid in identities.values())):
         return None
     return uid
+
+
+def start_managed_backend(http, data_dir, character_dir=None, startup_timeout=30):
+    from rf4_service_process import BackendProcess
+
+    manager = BackendProcess(data_dir, startup_timeout=startup_timeout, character_dir=character_dir)
+    try:
+        identities = dict(http.character_user_ids)
+        if character_dir is not None:
+            saved = json.loads((Path(character_dir) / 'inventory.json').read_text(encoding='utf-8'))
+            account, uid = _local_account(saved.get('targetAccount')), saved.get('sourceUserID')
+            if account in identities and identities[account] != uid:
+                raise RuntimeError('本地账号的角色绑定无效或冲突')
+            identities[account] = uid
+            identities = load_character_user_ids(manager.database, identities)
+        manager.start()
+        identities = load_character_user_ids(manager.database, identities)
+        http.character_user_ids = identities
+        http.backend_process = manager
+        http.backend_config = (manager.address, manager.psk)
+        return manager
+    except BaseException:
+        manager.close()
+        raise
 
 
 class GameHandler(socketserver.BaseRequestHandler):
@@ -851,10 +880,35 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin != "http://" + host:
             raise BadRequest(403, "不接受其他网站发来的请求")
+        if path in ("/api/health", "/api/shutdown"):
+            try:
+                local = ipaddress.ip_address(self.client_address[0]).is_loopback
+            except ValueError:
+                local = False
+            if not local or self.headers.get("Sec-Fetch-Site", "none") not in ("same-origin", "none"):
+                raise BadRequest(403, "请从本机同源入口控制后台")
+        if method == "POST" and path == "/api/shutdown":
+            data = self.body()
+            control = data.get("control", "")
+            if not isinstance(control, str) or not control.isascii() or not hmac.compare_digest(control, self.server.control):
+                raise BadRequest(403, "后台控制凭据无效")
+            self.reply(200, {"status": "stopping"})
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
         if method == "GET" and path == "/api/health":
+            manager = getattr(self.server, 'backend_process', None)
+            if manager is not None:
+                try:
+                    manager.check_alive()
+                except RuntimeError:
+                    return self.reply(503, {"app": APP_ID, "status": "unavailable"})
             protocol = 'reference-experimental' if getattr(self.server, 'backend_config', None) else 'bootstrap-only'
-            return self.reply(200, {"app": APP_ID, "status": "ready", "gameProtocol": protocol,
-                                    "nativeAuthentication": "experimental", "gamePort": self.server.game_port})
+            status = {"app": APP_ID, "status": "ready", "gameProtocol": protocol,
+                      "nativeAuthentication": "experimental", "gamePort": self.server.game_port,
+                      "saveRoot": str(self.server.db_path.parent.resolve()), "control": self.server.control}
+            if manager is not None:
+                status['adminURL'] = f'http://127.0.0.1:{manager.admin_address[1]}/admin/'
+            return self.reply(200, status)
         if method == "GET" and path == "/rf4/app/login_notice.json":
             return self.reply(200, [])  # The local service publishes no login announcements.
         if method == "GET" and path == "/api/client-events":
@@ -983,8 +1037,14 @@ def main():
     parser.add_argument("--port", type=int, default=19214)
     parser.add_argument("--game-port", type=int, default=19213)
     parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent / "data")
-    parser.add_argument("--backend-address", help="Authenticated loopback game logic endpoint")
+    backend_options = parser.add_mutually_exclusive_group()
+    backend_options.add_argument("--backend-address", help="Authenticated loopback game logic endpoint")
+    backend_options.add_argument("--managed-backend", action="store_true", help="Start owned local backend processes")
+    parser.add_argument("--character-dir", type=Path, help="Explicit character snapshot to import before startup")
+    parser.add_argument("--backend-timeout", type=float, default=30, help="Owned backend startup timeout in seconds")
     args = parser.parse_args()
+    if args.character_dir is not None and not args.managed_backend:
+        parser.error("--character-dir requires --managed-backend")
     try:
         server = Server(("127.0.0.1", args.port), Handler)
     except OSError:
@@ -1003,7 +1063,7 @@ def main():
     server.db_path = args.data_dir.resolve() / "local.sqlite3"
     server.client_events = deque(maxlen=100)
     server.events_lock = threading.Lock()
-    game_server = None
+    game_server = managed_backend = None
     try:
         initialize(server.db_path)
         server.catalog = load_catalog(args.data_dir.resolve() / 'catalog')
@@ -1021,6 +1081,8 @@ def main():
             if host != '127.0.0.1' or not port.isdecimal() or not 1 <= int(port) <= 65535 or len(psk.encode()) < 32:
                 raise RuntimeError('本地业务服务地址或密钥无效')
             server.backend_config = ((host, int(port)), psk)
+        elif args.managed_backend:
+            managed_backend = start_managed_backend(server, args.data_dir, args.character_dir, args.backend_timeout)
         game_server = GameServer(("127.0.0.1", args.game_port), GameHandler)
         game_server.http = server
         server.game_port = game_server.server_address[1]
@@ -1036,6 +1098,8 @@ def main():
         if game_server:
             game_server.shutdown()
             game_server.server_close()
+        if managed_backend is not None:
+            managed_backend.close()
         server.server_close()
 
 
