@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from urllib.parse import unquote
 from rf4_local_options import LocalOptionsError, game_database
+from rf4_local_membership import membership
 
 ROOT = Path(__file__).resolve().parent / 'web' / 'portal'
 SHARED = Path(__file__).resolve().parents[1] / 'internal' / 'portal' / 'web'
@@ -58,6 +59,24 @@ class PortalMixin:
                 self.portal_local()
                 self.reply(*static)
                 return True
+        if path in ('/api/membership', '/api/membership/purchase'):
+            _, uid = self.portal_user(resolve_identity)
+            if query:
+                raise LocalOptionsError(400, '角色由登录账户确定，不接受查询参数')
+            database = self.server.db_path.parent / 'gameplay.sqlite3'
+            manager = getattr(self.server, 'backend_process', None)
+            reference = manager.reference_dir if manager else Path(__file__).resolve().parents[1]
+            if path == '/api/membership' and method == 'GET':
+                value = membership(database, reference, uid)
+            elif path == '/api/membership/purchase' and method == 'POST':
+                data = self.body()
+                if set(data) != {'planID', 'requestID'}:
+                    raise LocalOptionsError(400, '购买只接受套餐和请求编号')
+                value = membership(database, reference, uid, plan_id=data['planID'], request_id=data['requestID'])
+            else:
+                raise LocalOptionsError(405, '会员接口不支持此操作')
+            self.reply(200, value)
+            return True
         if path not in ('/api/profile', '/portal/api/profile'):
             return False
         name, uid = self.portal_user(resolve_identity)
