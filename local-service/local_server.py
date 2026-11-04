@@ -23,6 +23,8 @@ from uuid import UUID
 from rf4_wire import Framer, acknowledgement, data_frame, SessionCipher
 from rf4_phoenix import Message, Result, Failure, StringArray, GuidArray, NativeValue, IntTriple133, Record309, TypedArray, Reader, UnsupportedValue, encode, decode
 from rf4_backend import BackendSession, DATA, CLOSE
+from rf4_portal import PortalMixin
+from rf4_local_options import LocalOptionsError
 
 APP_ID = "rf4-local-prototype-v1"
 BOOTSTRAP_TYPES = {(1, 13): 206, (5, 1): 311, (11, 1): 136, (6, 2): None,
@@ -773,7 +775,7 @@ class GameHandler(socketserver.BaseRequestHandler):
                 http.client_events.append(event)
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(PortalMixin, BaseHTTPRequestHandler):
     server_version = "RF4LocalPrototype/1"
 
     def log_message(self, *_):
@@ -851,6 +853,8 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and origin != "http://" + host:
             raise BadRequest(403, "不接受其他网站发来的请求")
+        if self.portal_request(path, method, query, local_game_uid):
+            return
         if method == "GET" and path == "/api/health":
             protocol = 'reference-experimental' if getattr(self.server, 'backend_config', None) else 'bootstrap-only'
             return self.reply(200, {"app": APP_ID, "status": "ready", "gameProtocol": protocol,
@@ -968,7 +972,7 @@ class Handler(BaseHTTPRequestHandler):
         self.connection.settimeout(15)
         try:
             self.dispatch()
-        except BadRequest as e:
+        except (BadRequest, LocalOptionsError) as e:
             self.reply(e.status, {"error": e.message})
         except (TimeoutError, BrokenPipeError, ConnectionResetError):
             pass
