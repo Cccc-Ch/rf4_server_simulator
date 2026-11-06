@@ -194,7 +194,8 @@ func TestRigDedupeAcrossMutuallyExclusiveCategories(t *testing.T) {
 }
 
 // TestDedupeRigComponentsKeepsTargetValid 直接验证去重选择逻辑：
-// 同品类两个组件规范化到同一索引时，保留 Extra 已是模板合法索引的那个。
+// 同品类两个组件规范化到同一索引时，保留 Extra 已是模板合法索引的那个，
+// 并通过收集器上报退回去向（审查补充建议：退回物品必须能进响应快照）。
 func TestDedupeRigComponentsKeepsTargetValid(t *testing.T) {
 	srv, _ := newDetachTestServer(t)
 	ctx := context.Background()
@@ -208,15 +209,30 @@ func TestDedupeRigComponentsKeepsTargetValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 先把旧前导挂到竿容器下，模拟"已挂载后触发去重"的真实场景。
+	if err := srv.DB.SetItemRigLink(ctx, old.GUID, "10000000000000000000000000000000", 13); err != nil {
+		t.Fatal(err)
+	}
 	comps := map[int64]rigComp{
 		rigCompKey(13, 0): {Category: 13, Ordinal: 0, GUID: old.GUID, Extra: 150},
 		rigCompKey(13, 1): {Category: 13, Ordinal: 1, GUID: cur.GUID, Extra: 175},
 	}
-	srv.dedupeRigComponents(ctx, uid, "00000000000000000000000000000000", 50, comps)
+	var released []*rigReleased
+	srv.dedupeRigComponents(ctx, uid, "10000000000000000000000000000000", 50, comps, &released)
 	if _, ok := comps[rigCompKey(13, 0)]; ok {
 		t.Fatalf("旧组件(extra 150)应被清理: %+v", comps)
 	}
 	if c, ok := comps[rigCompKey(13, 1)]; !ok || c.GUID != cur.GUID {
 		t.Fatalf("应保留 target-valid(175) 组件: %+v", comps)
+	}
+	// 收集器必须上报旧组件的退回去向，且退回树可进快照 f1。
+	if len(released) != 1 || released[0].GUID != old.GUID {
+		t.Fatalf("应收集到 1 条退回记录(旧组件): %+v", released)
+	}
+	if !released[0].Returned || released[0].ReturnTree == nil {
+		t.Fatalf("普通物品应标记 Returned 且带退回树: %+v", released[0])
+	}
+	if trees := releasedReturnTrees(released); len(trees) != 1 || trees[0] == nil {
+		t.Fatalf("releasedReturnTrees 应产出退回树: %+v", trees)
 	}
 }
