@@ -236,3 +236,69 @@ func TestDedupeRigComponentsKeepsTargetValid(t *testing.T) {
 		t.Fatalf("releasedReturnTrees 应产出退回树: %+v", trees)
 	}
 }
+
+// TestRigMountReplacesCrossCategorySharedSlot 验证正常装配时最后一次装配生效：
+// rig57 的钩(12)与拟饵(17)共用槽位252，先装钩再装拟饵后，应保留拟饵并把钩退回背包。
+func TestRigMountReplacesCrossCategorySharedSlot(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+
+	rod, err := srv.CreateItem(ctx, uid, "pilkr_10212_92-80190", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !srv.rigSetType(ctx, uid, rod.GUID, 57) {
+		t.Fatal("切 rig57 失败")
+	}
+	hook, err := srv.CreateItem(ctx, uid, "clas_20163", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lure, err := srv.CreateItem(ctx, uid, "pilkerlures_2630", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if res := srv.rigSetComponent(ctx, uid, rod.GUID, 12, hook.GUID, 252,
+		rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true}); res.Rejected {
+		t.Fatalf("装钩失败: %+v", res)
+	}
+	res := srv.rigSetComponent(ctx, uid, rod.GUID, 17, lure.GUID, 252,
+		rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true})
+	if res.Rejected {
+		t.Fatalf("装拟饵失败: %+v", res)
+	}
+
+	row, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil || row == nil {
+		t.Fatal(err)
+	}
+	comps := rigCompsOf(rigStoredF5(t, row))
+	var occupant *rigComp
+	for _, c := range comps {
+		if c.Extra == 252 {
+			c := c
+			occupant = &c
+		}
+	}
+	if occupant == nil || occupant.GUID != lure.GUID || occupant.Category != 17 {
+		t.Fatalf("最后一次装配的拟饵应占槽252，实得 %+v comps=%+v", occupant, comps)
+	}
+	hookRow, err := db.GetItemByGUID(ctx, hook.GUID)
+	if err != nil || hookRow == nil {
+		t.Fatal(err)
+	}
+	if hookRow.Container != "backpack" || hookRow.RigGUID != "" {
+		t.Fatalf("被替换的钩应退回背包，实得 container=%q rig=%q", hookRow.Container, hookRow.RigGUID)
+	}
+	foundReleased := false
+	for _, rel := range res.Released {
+		if rel != nil && rel.GUID == hook.GUID {
+			foundReleased = true
+		}
+	}
+	if !foundReleased {
+		t.Fatalf("装配结果应上报被替换钩的退回去向: %+v", res.Released)
+	}
+}

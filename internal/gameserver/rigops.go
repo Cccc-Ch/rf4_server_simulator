@@ -1146,8 +1146,8 @@ type rigSetResult struct {
 	AddedTrees   []*proto.Value // nil 表示无新增段（非拆分挂载时 f0 为 null）
 	UpdatedTrees []*proto.Value
 	RemovedGUIDs []string
-	SourceGUID   string       // 拆分挂载后的来源堆 guid（回包后强制刷新客户端计数）
-	SourceTree   *proto.Value // 来源堆减一后的新树
+	SourceGUID   string         // 拆分挂载后的来源堆 guid（回包后强制刷新客户端计数）
+	SourceTree   *proto.Value   // 来源堆减一后的新树
 	Released     []*rigReleased // 去重清理退回的组件（树已并入 UpdatedTrees，来源堆刷新走 queueReleasedStackRefresh）
 }
 
@@ -1563,10 +1563,31 @@ func (s *Server) rigItemMutate(ctx context.Context, rodGUID string, slot *int64,
 			if existingKey, _, ok := rigCompKeyForGUID(comps, comp.GUID); ok {
 				key = existingKey
 			}
-			comps[key] = rigComp{
+			next := rigComp{
 				Category: *slot, Ordinal: rigCompOrdinal(key), GUID: comp.GUID,
 				Extra: canonicalIndexForOrdinal(*slot, comp.Extra, curType, rigCompOrdinal(key)),
 			}
+			// 正常装配到共用槽位时，新组件必须替换该规范索引上的旧组件。
+			// 例如 rig57 的 {钩12,拟饵17}@252：先去重兜底会按品类顺序保留
+			// 旧钩并丢弃刚装的拟饵，表现为“装配成功但没换上去”。这里在
+			// 写入新组件前清掉所有同索引占用者，确保最后一次装配生效。
+			for otherKey, other := range comps {
+				if otherKey == key {
+					continue
+				}
+				otherCat, otherOrdinal := rigCompCategory(otherKey), rigCompOrdinal(otherKey)
+				if len(slotIndicesFor(curType, otherCat)) == 0 {
+					continue
+				}
+				if canonicalIndexForOrdinal(otherCat, other.Extra, curType, otherOrdinal) != next.Extra {
+					continue
+				}
+				delete(comps, otherKey)
+				if other.GUID != "" && other.GUID != next.GUID {
+					s.releaseDedupedComponent(ctx, row.UID, rodGUID, other.GUID, collect...)
+				}
+			}
+			comps[key] = next
 		}
 		// 装配写侧收口：组件一装上就必须与当前钓组模板兼容，不能先把冲突组合
 		// 落库、再等下一次 ensureRig 修。FD390 装食笼(31) 时由 12 自动切到 16。
