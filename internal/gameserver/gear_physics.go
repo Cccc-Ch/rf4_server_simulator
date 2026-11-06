@@ -348,24 +348,6 @@ func gearWeakestPart(spec gearPhysicsSpec) string {
 	return name
 }
 
-// canLandGear 判断鱼能否拉上岸，并返回最弱断件（rod/line/leader）。
-// pull = fish_weight_kg * k，默认 k 为 0.35。
-func canLandGear(spec gearPhysicsSpec, fishWeightKg, k float64) (bool, string) {
-	if fishWeightKg <= 0 {
-		return true, ""
-	}
-	if k <= 0 {
-		k = 0.35
-	}
-	pull := fishWeightKg * k
-	weakestName := gearWeakestPart(spec)
-	weakestKg := gearBreakLimitKg(spec)
-	if weakestKg == 0 || pull <= weakestKg {
-		return true, ""
-	}
-	return false, weakestName
-}
-
 // effectiveLineBuffer 是线材吸收冲击后的拉力系数（1=刚性，越大越能缓冲）。
 func effectiveLineBuffer(stretch float64) float64 {
 	if stretch < 0 {

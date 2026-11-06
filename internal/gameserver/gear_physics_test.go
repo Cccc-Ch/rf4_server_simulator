@@ -74,13 +74,7 @@ func TestGearPhysicsU32F32AndWeakestLink(t *testing.T) {
 	if got := gearWeakestPart(spec); got != "leader" {
 		t.Fatalf("最弱断件=%q，期望 leader", got)
 	}
-	can, part := canLandGear(spec, 20, 0.35)
-	if can || part != "leader" {
-		t.Fatalf("20kg 鱼应断 leader，得到 can=%v part=%q", can, part)
-	}
-	if can, part := canLandGear(spec, 10, 0.35); !can || part != "" {
-		t.Fatalf("10kg 鱼应能上岸，得到 can=%v part=%q", can, part)
-	}
+	// 注意：没有"鱼太重就不给咬钩/上不了岸"的判定函数，派鱼不按强度过滤。
 }
 
 func TestGearWeightCapIncludesHookStrengthAndHookSize(t *testing.T) {
