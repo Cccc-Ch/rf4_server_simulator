@@ -1377,7 +1377,9 @@ func (s *Server) rigSetComponent(ctx context.Context, uid int64, parentGUID stri
 		}
 	}
 	res.AddedTrees = added
-	res.UpdatedTrees = updated
+	// released 中的普通物品必须保留在最终更新段，供 800 快照 f1 通知客户端
+	// 已退回背包；不能用局部 updated 覆盖前面并入的退回树。
+	res.UpdatedTrees = append(updated, releasedReturnTrees(released)...)
 	res.RemovedGUIDs = removed
 	return res
 }

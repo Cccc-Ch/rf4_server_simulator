@@ -301,4 +301,15 @@ func TestRigMountReplacesCrossCategorySharedSlot(t *testing.T) {
 	if !foundReleased {
 		t.Fatalf("装配结果应上报被替换钩的退回去向: %+v", res.Released)
 	}
+	foundReturnTree := false
+	for _, tree := range res.UpdatedTrees {
+		for _, rel := range res.Released {
+			if rel != nil && rel.Returned && tree == rel.ReturnTree {
+				foundReturnTree = true
+			}
+		}
+	}
+	if !foundReturnTree {
+		t.Fatalf("被替换钩的退回树必须进入最终 800.f1 更新段: %+v", res.UpdatedTrees)
+	}
 }
