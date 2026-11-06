@@ -42,8 +42,9 @@ const (
 	// cap = factor * length^3。这是假想模型，本体没有对应判定，
 	// 只在 hook_entry_cap=1 时用于对照调试（默认关闭）。
 	hookWeightVolumeFactor = 8.0
-	// gearOverloadFactor 给玩家 35% 控鱼余量：17/9 裁决时按"最弱环 × 1.35"复核，
-	// 钩入口口径也乘这个系数。它**不参与派鱼过滤**。
+	// gearOverloadFactor 只在管理员打开派鱼截断调试时使用：旧承力口径和
+	// 钩入口口径都乘这个系数，给玩家 35% 控鱼余量。17/9 断件由客户端上报，
+	// 服务端据此持久化断件，不在这里重新判定承力。
 	gearOverloadFactor = 1.35
 )
 
@@ -265,11 +266,11 @@ func gearBreakLimitKg(spec gearPhysicsSpec) float64 {
 	return limit
 }
 
-// gearStrengthCapKg 是“按当前钓具承力换算，能搏多大的鱼”。
+// gearStrengthCapKg 是按当前钓具承力换算的旧派鱼诊断口径。
 //
-// 它只用于断件与日志诊断，**不参与派鱼**：鱼咬不咬钩取决于饵、水域、
-// 深度和鱼种分布，跟玩家手里这根线有多粗无关。弱线组照样会遇到大鱼，
-// 结果是在搏鱼阶段断线，而不是“大鱼不来”。
+// 默认不参与派鱼：鱼咬不咬钩取决于饵、水域、深度和鱼种分布，跟玩家手里
+// 这根线有多粗无关。弱线组照样会遇到大鱼，结果是在搏鱼阶段由客户端触发
+// 17/9 断件，而不是“大鱼不来”。只有 fish_weight_cap 打开时才恢复此口径。
 func gearStrengthCapKg(spec gearPhysicsSpec) float64 {
 	limit := gearBreakLimitKg(spec)
 	if limit <= 0 {
@@ -295,8 +296,8 @@ func hookEntryCapKg(spec gearPhysicsSpec) float64 {
 	return (hookCapG / 1000.0) * gearOverloadFactor
 }
 
-// gearWeightCapKg 返回强度上限与钩入口上限中的较小值，保留给日志与诊断。
-// 派鱼走 fishWeightCapKg，不要直接用这个函数。
+// gearWeightCapKg 返回强度上限与钩入口上限中的较小值，保留给测试与诊断对照。
+// 真实派鱼必须先经过 fishWeightCapKg 的两个独立开关，不要直接用这个函数。
 func gearWeightCapKg(spec gearPhysicsSpec) float64 {
 	strength := gearStrengthCapKg(spec)
 	entry := hookEntryCapKg(spec)
@@ -499,14 +500,14 @@ func (s *Server) mountedHookDef(ctx context.Context, rodGUID string) (*store.Ite
 	return def, 1
 }
 
-// gearWeightCapForRig 读取当前手持竿的物理件并返回可搏鱼体重上限（kg）。
+// gearWeightCapForRig 读取当前钓组并返回实际生效的派鱼重量上限（kg）；0 表示不截断。
 func (s *Server) gearWeightCapForRig(ctx context.Context, uid int64, rodGUID string) (float64, rigGearIDs, string) {
 	if s == nil || s.DB == nil {
 		return 0, rigGearIDs{}, ""
 	}
 	ids := s.rigGearIDs(ctx, uid, rodGUID)
 	spec := s.loadGearSpecForRig(ctx, ids, rodGUID)
-	// 派鱼用 fishWeightCapKg（默认只看钩入口），日志里仍能看到承力上限。
+	// 两个截断开关默认都关；日志中的 weakest 仍用于诊断承力链。
 	return s.fishWeightCapKg(spec), ids, gearWeakestPart(spec)
 }
 

@@ -189,15 +189,20 @@ func TestWeightSamplingRespectsCapSwitchAndScale(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s, db := seedBaitWeightTest(t)
 			setBaitRuleSwitch(t, s, "0")
-			if err := db.TunableSet(t.Context(), "fish_weight_scale", "2.5", "test"); err != nil {
-				t.Fatal(err)
+			for key, value := range map[string]string{"fish_weight_scale": "2.5", "fish_weight_cap": "0"} {
+				if err := db.TunableSet(t.Context(), key, value, "test"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s.execAdminCmd(&AdminCommand{Op: "reload_tunables"})
+			// 传入的是上层算好的有效上限；底层不得再读取 fish_weight_cap，
+			// 否则两个截断开关会重新耦合。
 			roll := func(capKg float64) *RolledFish {
+				loc := "level_900_rules"
 				if fallback {
-					return s.rollFishPoolsWithRules("weight-fallback", capKg, neutralFishingSkillBonus())
+					loc = "weight-fallback"
 				}
-				return s.rollFishFromDBWithRules("level_900_rules", "rule_neutral", capKg, neutralFishingSkillBonus())
+				return s.rollFishWithRules(loc, "rule_neutral", capKg, neutralFishingSkillBonus())
 			}
 			weights := map[int64]bool{}
 			atCap, count := 0, 0

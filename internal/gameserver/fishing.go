@@ -435,7 +435,7 @@ func (s *Server) rollFish(loc string, bait string) *RolledFish {
 	return s.rollFishWithRules(loc, bait, 0, fishingSkillBonus{BiteSpeed: 1})
 }
 
-// rollFishForRig 是判鱼入口：先计算当前钓组的最弱环体重上限，
+// rollFishForRig 是判鱼入口：先按两个调试开关计算有效派鱼上限（默认 0，不截断），
 // 再对静态鱼库和内置鱼池应用该上限及奖杯幸运。
 func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, bait string, bonus fishingSkillBonus, contexts ...fishRollContext) *RolledFish {
 	c := rollContext(contexts)
@@ -636,7 +636,7 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 		scale = 1
 	}
 	capG := 0.0
-	// 上限由 fishWeightCapKg 决定：默认只有“钩入口”，承力不参与派鱼。
+	// gearCapKg 是上层按开关计算好的有效上限；0 表示完全不截断。
 	if gearCapKg > 0 {
 		capG = gearCapKg * 1000
 		if capG < 1 {
