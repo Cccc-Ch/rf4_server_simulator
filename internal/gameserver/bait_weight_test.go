@@ -193,16 +193,16 @@ func TestWeightSamplingRespectsCapSwitchAndScale(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.execAdminCmd(&AdminCommand{Op: "reload_tunables"})
-			roll := func() *RolledFish {
+			roll := func(capKg float64) *RolledFish {
 				if fallback {
-					return s.rollFishPoolsWithRules("weight-fallback", 0.301, neutralFishingSkillBonus())
+					return s.rollFishPoolsWithRules("weight-fallback", capKg, neutralFishingSkillBonus())
 				}
-				return s.rollFishFromDBWithRules("level_900_rules", "rule_neutral", 0.301, neutralFishingSkillBonus())
+				return s.rollFishFromDBWithRules("level_900_rules", "rule_neutral", capKg, neutralFishingSkillBonus())
 			}
 			weights := map[int64]bool{}
 			atCap, count := 0, 0
 			for attempts := 0; count < 600 && attempts < 12000; attempts++ {
-				f := roll()
+				f := roll(0.301)
 				if f == nil || f.Species != "c.roach" {
 					continue
 				}
@@ -218,13 +218,10 @@ func TestWeightSamplingRespectsCapSwitchAndScale(t *testing.T) {
 			if count != 600 || len(weights) < 80 || atCap > count/20 {
 				t.Fatalf("cap created a weight spike: count=%d distinct=%d atCap=%d", count, len(weights), atCap)
 			}
-			if err := db.TunableSet(t.Context(), "fish_weight_cap", "0", "test"); err != nil {
-				t.Fatal(err)
-			}
-			s.execAdminCmd(&AdminCommand{Op: "reload_tunables"})
+			// 上限为 0 表示完全不截断（fishWeightCapKg 关闭时就是返回 0）。
 			aboveCap := 0
 			for range 200 {
-				if f := roll(); f != nil && f.WeightG > 301 {
+				if f := roll(0); f != nil && f.WeightG > 301 {
 					aboveCap++
 				}
 			}

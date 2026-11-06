@@ -265,6 +265,64 @@ func gearBreakLimitKg(spec gearPhysicsSpec) float64 {
 	return limit
 }
 
+// gearStrengthCapKg 是“按当前钓具承力换算，能搏多大的鱼”。
+//
+// 它只用于断件与日志诊断，**不参与派鱼**：鱼咬不咬钩取决于饵、水域、
+// 深度和鱼种分布，跟玩家手里这根线有多粗无关。弱线组照样会遇到大鱼，
+// 结果是在搏鱼阶段断线，而不是“大鱼不来”。
+func gearStrengthCapKg(spec gearPhysicsSpec) float64 {
+	limit := gearBreakLimitKg(spec)
+	if limit <= 0 {
+		return 0
+	}
+	return limit * gearOverloadFactor
+}
+
+// hookEntryCapKg 是钩的入口上限：钩体太小，大鱼即使咬中也挂不住。
+// 这是“钩号 × 鱼嘴”的几何关系，不是承力，所以和强度上限分开控制。
+func hookEntryCapKg(spec gearPhysicsSpec) float64 {
+	if !spec.HookPresent {
+		return 0
+	}
+	hookCapG := hookWeightCapG(spec.HookLengthMM, spec.HookSize)
+	if hookCapG <= 0 {
+		return 0
+	}
+	return (hookCapG / 1000.0) * gearOverloadFactor
+}
+
+// gearWeightCapKg 返回强度上限与钩入口上限中的较小值，保留给日志与诊断。
+// 派鱼走 fishWeightCapKg，不要直接用这个函数。
+func gearWeightCapKg(spec gearPhysicsSpec) float64 {
+	strength := gearStrengthCapKg(spec)
+	entry := hookEntryCapKg(spec)
+	if strength <= 0 {
+		return entry
+	}
+	if entry <= 0 {
+		return strength
+	}
+	return math.Min(strength, entry)
+}
+
+// fishWeightCapKg 是派鱼实际生效的重量上限，两条限制分别开关：
+//   - 承力截断 fish_weight_cap：默认 0（关闭），派鱼不看钓具强度；
+//   - 钩入口 hook_entry_cap：默认 1（开启），小钩不派巨物。
+//
+// 返回 0 表示不做重量截断。
+func (s *Server) fishWeightCapKg(spec gearPhysicsSpec) float64 {
+	capKg := 0.0
+	if s.tunableF("fish_weight_cap", 0) > 0 {
+		capKg = gearStrengthCapKg(spec)
+	}
+	if s.tunableF("hook_entry_cap", 1) > 0 {
+		if entry := hookEntryCapKg(spec); entry > 0 && (capKg <= 0 || entry < capKg) {
+			capKg = entry
+		}
+	}
+	return capKg
+}
+
 func gearWeakestPart(spec gearPhysicsSpec) string {
 	reelKg := 0.0
 	if spec.ReelPresent {
@@ -317,27 +375,6 @@ func effectiveLineBuffer(stretch float64) float64 {
 		stretch = 1
 	}
 	return 1.0 - 0.5*stretch
-}
-
-// gearWeightCapKg 是断件阈值换算后的可搏鱼体重上限；0 表示不约束。
-// 钩号/钩体尺寸额外给出一个“鱼能入口”的重量上限，因此小钩不会再派发巨物。
-func gearWeightCapKg(spec gearPhysicsSpec) float64 {
-	limit := gearBreakLimitKg(spec)
-	capKg := 0.0
-	if limit > 0 {
-		capKg = limit * gearOverloadFactor
-	}
-	if spec.HookPresent {
-		hookCapG := hookWeightCapG(spec.HookLengthMM, spec.HookSize)
-		if hookCapG <= 0 {
-			return capKg
-		}
-		hookCapKg := (hookCapG / 1000.0) * gearOverloadFactor
-		if capKg <= 0 || hookCapKg < capKg {
-			capKg = hookCapKg
-		}
-	}
-	return capKg
 }
 
 // hookWeightCapG 以钩体长度估算鱼入口的重量上限。缺少长度时用钩号
@@ -482,7 +519,8 @@ func (s *Server) gearWeightCapForRig(ctx context.Context, uid int64, rodGUID str
 	}
 	ids := s.rigGearIDs(ctx, uid, rodGUID)
 	spec := s.loadGearSpecForRig(ctx, ids, rodGUID)
-	return gearWeightCapKg(spec), ids, gearWeakestPart(spec)
+	// 派鱼用 fishWeightCapKg（默认只看钩入口），日志里仍能看到承力上限。
+	return s.fishWeightCapKg(spec), ids, gearWeakestPart(spec)
 }
 
 // rigGearIDs 解析当前钓组，优先读取竿实例：

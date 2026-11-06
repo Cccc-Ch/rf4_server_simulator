@@ -461,7 +461,13 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 			return nil
 		}
 		if capKg > 0 {
-			s.log.Info("钓鱼物理上限", "rod", ids.Rod, "reel", ids.Reel, "line", ids.Line, "leader", ids.Leader, "weakest", weakest, "cap_kg", capKg)
+			// 默认上限来自钩入口；只有显式打开 fish_weight_cap 才叠加承力。
+			capRule := "hook_entry"
+			if s.tunableF("fish_weight_cap", 0) > 0 {
+				capRule = "strength+hook_entry"
+			}
+			s.log.Info("派鱼重量上限", "rod", ids.Rod, "reel", ids.Reel, "line", ids.Line,
+				"leader", ids.Leader, "weakest", weakest, "cap_kg", capKg, "rule", capRule)
 		}
 		return s.rollFishWithRules(loc, bait, capKg, bonus, c)
 	}
@@ -473,7 +479,7 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 			continue
 		}
 		c.baits = group.baits
-		f := s.rollFishWithRules(loc, group.baits[0], gearWeightCapKg(selected), bonus, c)
+		f := s.rollFishWithRules(loc, group.baits[0], s.fishWeightCapKg(selected), bonus, c)
 		if f != nil {
 			f.HookGUID = group.hookGUID
 			f.BaitGUIDs, f.BaitsKnown = strings.Join(group.baitGUIDs, " "), true
@@ -625,7 +631,8 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 		scale = 1
 	}
 	capG := 0.0
-	if gearCapKg > 0 && s.tunableF("fish_weight_cap", 1) > 0 {
+	// 上限由 fishWeightCapKg 决定：默认只有“钩入口”，承力不参与派鱼。
+	if gearCapKg > 0 {
 		capG = gearCapKg * 1000
 		if capG < 1 {
 			return nil
@@ -885,7 +892,8 @@ func (s *Server) rollFishPoolsWithRules(loc string, gearCapKg float64, bonus fis
 		scale = 1
 	}
 	capG := 0.0
-	if s.tunableF("fish_weight_cap", 1) > 0 {
+	// 同上：没有生效上限（gearCapKg<=0）时不截断，鱼池按原分布投放。
+	if gearCapKg > 0 {
 		capG = poolWeightCapG(gearCapKg, bonus.FightTolerance)
 		if capG > 0 {
 			eligible := make([]fishPoolEntry, 0, len(pool))
