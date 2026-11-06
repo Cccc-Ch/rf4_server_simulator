@@ -1556,49 +1556,6 @@ var wearPerCatch = map[string]float64{
 	"default": 0.0006, // 其它组件
 }
 
-// slotWearKey 将组件槽位映射到磨损类别。
-var slotWearKey = map[int64]string{
-	1: "line", 2: "line", 3: "hook", 4: "bait", 5: "float",
-	6: "lure", 7: "lure", 8: "lure",
-}
-
-// wearRigForCatch 在 14/4 成功后降低钓组各组件的耐久。
-// 4/5 重建以 item.durability 列为准，更新该列即可同步字段。
-func (s *Server) wearRigForCatch(ctx context.Context, rigGUID string) {
-	if rigGUID == "" || s.DB == nil {
-		return
-	}
-	comps, err := s.DB.ListRigComponents(ctx, rigGUID)
-	if err != nil {
-		return
-	}
-	for _, c := range comps {
-		if c.GUID == "" {
-			continue
-		}
-		key, ok := slotWearKey[c.Slot]
-		if !ok {
-			key = "default"
-		}
-		amount := wearPerCatch[key]
-		if amount <= 0 {
-			continue
-		}
-		row, err := s.DB.GetItemByGUID(ctx, c.GUID)
-		if err != nil || row == nil {
-			continue
-		}
-		newD := math.Max(0.0, row.Durability-amount)
-		if math.Abs(newD-row.Durability) < 1e-9 {
-			continue
-		}
-		if err := s.DB.SetItemDurability(ctx, row.GUID, newD); err == nil {
-			s.log.Info("钓获磨损", "guid", shortGUID(row.GUID),
-				"类别", key, "耐久", fmt.Sprintf("%.4f->%.4f", row.Durability, newD))
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // 17/12 设钓深（handlers/fishing/17_12.py + item_factory.rod_rig_set_depth）
 // ---------------------------------------------------------------------------

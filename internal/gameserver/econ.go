@@ -104,8 +104,8 @@ func (s *Server) fishingEnd(ctx *Ctx) ([]byte, bool) {
 		// catch_log 只在 14/5 入护时写入；14/4 放生的鱼不进入统计和纪录。
 		pending.XP = xp
 		pending.Silver = silver
-		// 对本次钓组组件施加钓获磨损。
-		s.wearRigForCatch(cctx, st.GearGuid)
+		// 对本次钓组组件施加钓获磨损（按品类映射 + 竿本体 + 损坏日志）。
+		s.wearRigForCatchPersisted(cctx, st.GearGuid)
 		st.mu.Lock()
 		st.LastSkill = skillID
 		st.mu.Unlock()
