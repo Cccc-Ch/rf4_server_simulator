@@ -124,4 +124,99 @@ func TestRigTypeSwitchDedupesSameIndex(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("换类型后同索引前导仍有 %d 条: %+v", len(got), got)
 	}
+	if got[0].GUID != first.GUID {
+		t.Fatalf("两条都 target-valid 时应保留先装配的 first，实得 %+v", got)
+	}
+}
+
+// TestRigDedupeAcrossMutuallyExclusiveCategories 复现审查 P2：rig57 模板把钩(12)
+// 和拟饵(17)声明为同一槽位 252 的互斥替代项，两者同时挂载应被去重，而不是共存。
+func TestRigDedupeAcrossMutuallyExclusiveCategories(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+
+	rod, err := srv.CreateItem(ctx, uid, "pilkr_10212_92-80190", "backpack", 1)
+	if err != nil {
+		t.Fatalf("造竿失败: %v", err)
+	}
+	if !srv.rigSetType(ctx, uid, rod.GUID, 57) {
+		t.Fatal("切 rig57 失败")
+	}
+	hook, err := srv.CreateItem(ctx, uid, "clas_20163", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lure, err := srv.CreateItem(ctx, uid, "pilkerlures_2630", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 手工注入同一槽位 252 的钩(12)和拟饵(17)。
+	row, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil || row == nil {
+		t.Fatal(err)
+	}
+	fields, err := FieldsFromJSON(row.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := fieldIdxByCS(row.WireClass, csRigObject)
+	name, rigType, _ := rigIdentity(fields[idx].Val)
+	comps := rigCompsOf(fields[idx].Val)
+	comps[rigCompKey(12, 0)] = rigComp{Category: 12, Ordinal: 0, GUID: hook.GUID, Extra: 252}
+	comps[rigCompKey(17, 0)] = rigComp{Category: 17, Ordinal: 0, GUID: lure.GUID, Extra: 252}
+	fields[idx].Val = buildRig153Like(fields[idx].Val, name, rigType, comps, 100, 0)
+	srv.saveItemFields(ctx, row, fields)
+	if err := db.SetItemRigLink(ctx, hook.GUID, rod.GUID, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetItemRigLink(ctx, lure.GUID, rod.GUID, 17); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.reconcileRigProjection(ctx, rod.GUID); err != nil {
+		t.Fatalf("投影重建失败: %v", err)
+	}
+	fresh, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := rigCompsOf(rigStoredF5(t, fresh))
+	count := 0
+	for _, c := range stored {
+		if (c.Category == 12 || c.Category == 17) && c.Extra == 252 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("钩/拟饵同槽 252 应去重为 1 条，实得 %d 条: %+v", count, stored)
+	}
+}
+
+// TestDedupeRigComponentsKeepsTargetValid 直接验证去重选择逻辑：
+// 同品类两个组件规范化到同一索引时，保留 Extra 已是模板合法索引的那个。
+func TestDedupeRigComponentsKeepsTargetValid(t *testing.T) {
+	srv, _ := newDetachTestServer(t)
+	ctx := context.Background()
+	const uid = int64(1000001)
+
+	old, err := srv.CreateItem(ctx, uid, "sh_leader_40815", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur, err := srv.CreateItem(ctx, uid, "sh_leader_40815", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comps := map[int64]rigComp{
+		rigCompKey(13, 0): {Category: 13, Ordinal: 0, GUID: old.GUID, Extra: 150},
+		rigCompKey(13, 1): {Category: 13, Ordinal: 1, GUID: cur.GUID, Extra: 175},
+	}
+	srv.dedupeRigComponents(ctx, uid, "00000000000000000000000000000000", 50, comps)
+	if _, ok := comps[rigCompKey(13, 0)]; ok {
+		t.Fatalf("旧组件(extra 150)应被清理: %+v", comps)
+	}
+	if c, ok := comps[rigCompKey(13, 1)]; !ok || c.GUID != cur.GUID {
+		t.Fatalf("应保留 target-valid(175) 组件: %+v", comps)
+	}
 }

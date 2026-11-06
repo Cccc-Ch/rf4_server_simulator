@@ -231,12 +231,17 @@ func uniqueIndices(idxs []int64) []int64 {
 	return out
 }
 
-// dedupeRigComponents 清理重复规范索引：同一 (品类, 规范索引) 只保留先出现的
-// 一个组件，其余退回背包或来源堆。
+// dedupeRigComponents 清理重复规范索引：规范索引唯一标识一个槽位，同一槽位
+// 只保留一个组件，其余退回背包或来源堆。
 //
 // 客户端按规范索引渲染 f5 组件，两个组件落在同一索引上会互相覆盖：
 // 轻则重量/耐久算两份，重则整条钓组被判定无效（海钓前导重复挂载时，
 // 抛竿后客户端立即收回钓组，表现为饵一入水就回到手上）。
+// 一个槽位可声明多个互斥品类（如 rig57 的 {12,17}@252，钩与拟饵互斥），
+// 所以去重键是规范索引本身，而不是 (品类, 索引)。
+// 冲突时优先保留"原始 Extra 已是当前模板合法索引"的组件（target-valid），
+// 其次按 (品类, ordinal) 顺序——换钓组类型后保留的是当前有效组件，
+// 而不是旧类型残留的低 ordinal 组件。
 // 模板未声明的品类（钩饵 27、路亚/海钓拟饵 17 等）不参与去重，
 // 它们的多实例由钩位序和挂饵方式决定。
 func (s *Server) dedupeRigComponents(ctx context.Context, uid int64, parentGUID string, rigType int64, comps map[int64]rigComp) bool {
@@ -251,11 +256,12 @@ func (s *Server) dedupeRigComponents(ctx context.Context, uid int64, parentGUID 
 		}
 		return rigCompOrdinal(keys[i]) < rigCompOrdinal(keys[j])
 	})
-	type slotKey struct {
-		category int64
-		index    int64
+	type keptSlot struct {
+		key         int64
+		guid        string
+		targetValid bool
 	}
-	seen := map[slotKey]string{}
+	seen := map[int64]keptSlot{}
 	changed := false
 	for _, key := range keys {
 		comp := comps[key]
@@ -266,22 +272,49 @@ func (s *Server) dedupeRigComponents(ctx context.Context, uid int64, parentGUID 
 			continue
 		}
 		index := canonicalIndexForOrdinal(category, comp.Extra, rigType, ordinal)
-		identity := slotKey{category: category, index: index}
-		if keptGUID, exists := seen[identity]; exists {
-			delete(comps, key)
+		targetValid := extraIsTargetIndex(category, comp.Extra, rigType)
+		if kept, exists := seen[index]; exists {
+			if targetValid && !kept.targetValid {
+				// 当前组件才是当前模板合法索引，替换掉旧的。
+				delete(comps, kept.key)
+				if kept.guid != "" && kept.guid != comp.GUID {
+					s.releaseDedupedComponent(ctx, uid, parentGUID, kept.guid)
+				}
+				seen[index] = keptSlot{key: key, guid: comp.GUID, targetValid: targetValid}
+			} else {
+				// 都有效/都无效时保留先遍历到的（低品类、低 ordinal）。
+				delete(comps, key)
+				if comp.GUID != "" && comp.GUID != kept.guid {
+					s.releaseDedupedComponent(ctx, uid, parentGUID, comp.GUID)
+				}
+			}
 			changed = true
-			if comp.GUID == "" || comp.GUID == keptGUID {
-				continue
-			}
-			row, err := s.DB.GetItemByGUID(ctx, comp.GUID)
-			if err == nil && row != nil && row.UID == uid && row.Container == "rig" && row.RigGUID == parentGUID {
-				s.releaseRigComponentItem(ctx, row)
-			}
 			continue
 		}
-		seen[identity] = comp.GUID
+		seen[index] = keptSlot{key: key, guid: comp.GUID, targetValid: targetValid}
 	}
 	return changed
+}
+
+// extraIsTargetIndex 判断组件当前 Extra 是否已是钓组模板声明的合法槽位索引。
+func extraIsTargetIndex(category, extra, rigType int64) bool {
+	for _, idx := range slotIndicesFor(rigType, category) {
+		if extra == idx {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseDedupedComponent 将被清理的组件实例退回背包或来源堆。
+func (s *Server) releaseDedupedComponent(ctx context.Context, uid int64, parentGUID, guid string) {
+	if guid == "" {
+		return
+	}
+	row, err := s.DB.GetItemByGUID(ctx, guid)
+	if err == nil && row != nil && row.UID == uid && row.Container == "rig" && row.RigGUID == parentGUID {
+		s.releaseRigComponentItem(ctx, row)
+	}
 }
 
 // releaseRigComponentItem 将一个被清理的组件实例退回背包或来源堆。
