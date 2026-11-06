@@ -461,10 +461,15 @@ func (s *Server) rollFishForRig(ctx context.Context, uid int64, gearGUID, loc, b
 			return nil
 		}
 		if capKg > 0 {
-			// 默认上限来自钩入口；只有显式打开 fish_weight_cap 才叠加承力。
+			// 默认两条截断都关（capKg=0 不进这里）；只有管理员显式打开才会打这条日志。
+			strengthOn := s.tunableF("fish_weight_cap", 0) > 0
+			entryOn := s.tunableF("hook_entry_cap", 0) > 0
 			capRule := "hook_entry"
-			if s.tunableF("fish_weight_cap", 0) > 0 {
+			switch {
+			case strengthOn && entryOn:
 				capRule = "strength+hook_entry"
+			case strengthOn:
+				capRule = "strength"
 			}
 			s.log.Info("派鱼重量上限", "rod", ids.Rod, "reel", ids.Reel, "line", ids.Line,
 				"leader", ids.Leader, "weakest", weakest, "cap_kg", capKg, "rule", capRule)

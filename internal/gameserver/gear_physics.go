@@ -38,12 +38,12 @@ const (
 	gearAttrHookSize = "gkfbafmbpam"
 	gearAttrHookLen  = "najajfakhdo"
 
-	// hookWeightVolumeFactor 把钩体长度(mm)换算成可入口鱼重上限(g)：
-	// cap = factor * length^3。立方关系对应鱼体长度/嘴口径的比例关系，
-	// 实际仍有竿线强度和 fight_tolerance 共同限制。
+	// hookWeightVolumeFactor 把钩体长度(mm)换算成"能入口"的鱼重上限(g)：
+	// cap = factor * length^3。这是假想模型，本体没有对应判定，
+	// 只在 hook_entry_cap=1 时用于对照调试（默认关闭）。
 	hookWeightVolumeFactor = 8.0
-	// gearOverloadFactor 允许鱼略超最弱承力件。客户端仍会按真实张力
-	// 触发 17/9；这个系数只决定派鱼重量窗口，不代表能无限超载。
+	// gearOverloadFactor 给玩家 35% 控鱼余量：17/9 裁决时按"最弱环 × 1.35"复核，
+	// 钩入口口径也乘这个系数。它**不参与派鱼过滤**。
 	gearOverloadFactor = 1.35
 )
 
@@ -278,8 +278,12 @@ func gearStrengthCapKg(spec gearPhysicsSpec) float64 {
 	return limit * gearOverloadFactor
 }
 
-// hookEntryCapKg 是钩的入口上限：钩体太小，大鱼即使咬中也挂不住。
-// 这是“钩号 × 鱼嘴”的几何关系，不是承力，所以和强度上限分开控制。
+// hookEntryCapKg 是钩的入口换算：钩体太小，大鱼即使咬中也挂不住。
+// 这是"钩号 × 鱼嘴"的几何关系，不是承力，所以和强度上限分开控制。
+//
+// 注意：这是**假想模型**，不是本体规则。本体里钩号只决定钩的强度与外观，
+// 没有"鱼嘴太大咬不住小钩"的判定；默认关闭（见 fishWeightCapKg），
+// 只在管理员想对照调试时打开。
 func hookEntryCapKg(spec gearPhysicsSpec) float64 {
 	if !spec.HookPresent {
 		return 0
@@ -305,17 +309,18 @@ func gearWeightCapKg(spec gearPhysicsSpec) float64 {
 	return math.Min(strength, entry)
 }
 
-// fishWeightCapKg 是派鱼实际生效的重量上限，两条限制分别开关：
-//   - 承力截断 fish_weight_cap：默认 0（关闭），派鱼不看钓具强度；
-//   - 钩入口 hook_entry_cap：默认 1（开启），小钩不派巨物。
+// fishWeightCapKg 是派鱼实际生效的重量上限，两条限制分别开关，**默认都关**：
+//   - 承力截断 fish_weight_cap：默认 0。线多粗不影响鱼来不来，只影响搏鱼时断不断；
+//   - 钩入口截断 hook_entry_cap：默认 0。钩号大小不影响鱼来不来，所有钩都可能上所有鱼。
 //
-// 返回 0 表示不做重量截断。
+// 两个都关时返回 0，表示不截断——这是默认状态：鱼种由饵、水域、深度和鱼种分布决定，
+// 钓具只决定"拉不拉得上来"。管理员显式写 1 才恢复对应的旧模型，用于对照调试。
 func (s *Server) fishWeightCapKg(spec gearPhysicsSpec) float64 {
 	capKg := 0.0
 	if s.tunableF("fish_weight_cap", 0) > 0 {
 		capKg = gearStrengthCapKg(spec)
 	}
-	if s.tunableF("hook_entry_cap", 1) > 0 {
+	if s.tunableF("hook_entry_cap", 0) > 0 {
 		if entry := hookEntryCapKg(spec); entry > 0 && (capKg <= 0 || entry < capKg) {
 			capKg = entry
 		}
